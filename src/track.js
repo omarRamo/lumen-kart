@@ -803,11 +803,15 @@ export function createTrack(scene, renderer, opts = {}) {
     disposables.push(bannerTex);
     const bannerGeo = new THREE.PlaneGeometry(span - 0.4, 3);
     disposables.push(bannerGeo);
-    const bannerMat = mat(new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.6, side: THREE.DoubleSide }));
-    const banner = new THREE.Mesh(bannerGeo, bannerMat);
-    banner.position.set((xL + xR) / 2, 11, -0.05);
-    banner.rotation.y = Math.PI;   // readable from the grid
-    g.add(banner);
+    // Two single-sided faces back to back: a DoubleSide plane showed the name mirrored from behind
+    // (intro fly-by, look-back, time-trial grid).
+    const bannerMat = mat(new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.6 }));
+    for (const ry of [Math.PI, 0]) {
+      const banner = new THREE.Mesh(bannerGeo, bannerMat);
+      banner.position.set((xL + xR) / 2, 11, -0.05);
+      banner.rotation.y = ry;   // PI: readable from the grid; 0: readable after the line
+      g.add(banner);
+    }
     const lampGeo = new THREE.SphereGeometry(0.62, 14, 10);
     disposables.push(lampGeo);
     for (let k = 0; k < 3; k++) {
