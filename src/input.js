@@ -33,8 +33,10 @@ const GP_ACTIONS = {
 
 const PREVENT = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
 const STICK_DEADZONE = 0.18;
-const STEER_RAMP_TIME = 0.08;   // seconds from 0 -> full lock on keyboard
-const STEER_RELEASE_TIME = 0.06;
+const STICK_EXPO = 1.35;
+// Keyboard ramp is short: the player kart adds its own steering ramp (FEEL.steerRiseTime) for every device.
+const STEER_RAMP_TIME = 0.05;   // seconds from 0 -> full lock on keyboard
+const STEER_RELEASE_TIME = 0.04;
 
 function isTypingTarget(el) {
   if (!el) return false;
@@ -144,7 +146,9 @@ export class InputController {
       const ax = pad.axes?.[0] ?? 0;
       const ay = pad.axes?.[1] ?? 0;
       if (Math.abs(ax) > STICK_DEADZONE) {
-        this.gpSteer = Math.sign(ax) * Math.min(1, (Math.abs(ax) - STICK_DEADZONE) / (1 - STICK_DEADZONE));
+        // mild expo: precise small corrections, full lock still reachable
+        const lin = Math.min(1, (Math.abs(ax) - STICK_DEADZONE) / (1 - STICK_DEADZONE));
+        this.gpSteer = Math.sign(ax) * Math.pow(lin, STICK_EXPO);
       }
       if (held.left) this.gpSteer = -1;
       if (held.right) this.gpSteer = 1;

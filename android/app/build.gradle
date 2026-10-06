@@ -1,0 +1,93 @@
+apply plugin: 'com.android.application'
+
+// ---------------------------------------------------------------------------------------------
+// Version: versionName follows package.json; versionCode defaults to 1 and CI overrides it with
+// -PlumenKart.versionCode=<run number> (Play needs a strictly increasing integer per upload).
+// ---------------------------------------------------------------------------------------------
+def packageJson = new groovy.json.JsonSlurper().parse(rootProject.file('../package.json'))
+def lumenVersionCode = (findProperty('lumenKart.versionCode') ?: '1') as Integer
+def lumenVersionName = (findProperty('lumenKart.versionName') ?: packageJson.version) as String
+
+// ---------------------------------------------------------------------------------------------
+// Release signing — never committed. Sources, first match wins:
+//   1. environment: ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+//      (CI decodes the ANDROID_KEYSTORE_BASE64 secret to a temp file and exports the path)
+//   2. android/keystore.properties (git-ignored): storeFile, storePassword, keyAlias, keyPassword
+// Passwords are read from the environment/file, never from -P (visible in `ps` and build scans).
+// Without a keystore, bundleRelease/assembleRelease produce UNSIGNED artifacts (Play rejects them).
+// ---------------------------------------------------------------------------------------------
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+if (keystorePropertiesFile.exists()) keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+def signingValue = { String env, String key -> System.getenv(env) ?: keystoreProperties.getProperty(key) }
+def releaseStoreFile = signingValue('ANDROID_KEYSTORE_PATH', 'storeFile')
+def hasReleaseSigning = releaseStoreFile && file(releaseStoreFile).exists() &&
+    signingValue('ANDROID_KEYSTORE_PASSWORD', 'storePassword') && signingValue('ANDROID_KEY_ALIAS', 'keyAlias')
+
+android {
+    namespace = "com.omartrabelsi.lumenkart"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.omartrabelsi.lumenkart"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode lumenVersionCode
+        versionName lumenVersionName
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword signingValue('ANDROID_KEYSTORE_PASSWORD', 'storePassword')
+                keyAlias signingValue('ANDROID_KEY_ALIAS', 'keyAlias')
+                keyPassword signingValue('ANDROID_KEY_PASSWORD', 'keyPassword') ?: signingValue('ANDROID_KEYSTORE_PASSWORD', 'storePassword')
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // Capacitor discovers plugins by reflection: R8 would strip them.
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) signingConfig signingConfigs.release
+        }
+    }
+    bundle {
+        // A landscape game ships every language string; Play still splits by density/ABI.
+        language { enableSplit = false }
+    }
+    packaging {
+        jniLibs { useLegacyPackaging false }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+// No Firebase / Google Services: Lumen Kart collects nothing and has no push notifications.

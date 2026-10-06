@@ -1,5 +1,12 @@
-// Track (Agent 1 — World). See ARCHITECTURE.md §1 for the contract.
-// createTrack(scene, renderer) -> Track
+// Track (Mondes). See ARCHITECTURE.md §1 + "Extensions" for the contract.
+// createTrack(scene, renderer, { def, mirror, trackId, quality }) -> Track
+//
+// Data-driven generator: the course definition (tracks.js) gives control points and feature placements
+// in "cpf" (fractional control-point index). Besides the original features (boost pads, ramps, gaps, item
+// rows, coin/note lines, hazards, a lagoon `lake`), definitions may declare:
+//   bridges:   [{ from, to }]  land viaducts / boardwalks (rails, deck, piers, no terrain under the road)
+//   shortcuts: [{ from, to }]  the inner barrier of that bend opens onto offroad (a cut for boosting experts)
+// Quality hint (mobile): opts.quality || renderer.userData.quality || globalThis.__lumenQuality ∈ high|medium|low.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { bus } from './events.js';
@@ -12,10 +19,37 @@ const N = 2000;                 // centerline samples
 const HALF_W = 12;              // road half width (roadWidth = 24)
 const GRID_CELL = 40;
 const WATER_LEVEL = -1;
+const OPEN_W = 58;              // barrier offset on the opened side of a shortcut
 
-// Offroad band texture per theme
-const OFFROAD_TEX = { beach: 'makeGrassTexture', snow: 'makeSnowTexture', desert: 'makeSandTexture', lava: 'makeAshTexture' };
-const ROAD_TINT = { beach: 0xffffff, snow: 0xdfe9ff, desert: 0xf3dcc0, lava: 0xc0b4cc };
+export const WORLD_ALIASES = { beach: 'lagoon', snow: 'aurora', lava: 'night' };
+export const resolveWorld = (theme) => WORLD_ALIASES[theme] || theme || 'meadow';
+
+// Per-world dressing of the track itself (environment.js does the rest).
+const STYLE = {
+  meadow: { boardwalk: true, bumper: [0xf2d37a, 0xfff4dc, 0xe7b860], wallTop: 0xfff7dc, pier: 0xa77e57, gantry: [0xfff7dc, 0xe98c73, 0x387d76], banner: ['#387d76', '#2b625d', '#fff7dc', '#edc371'], ramp: 0xedc371 },
+  lagoon: { boardwalk: true, bumper: [0xff8a6a, 0xffffff, 0x3fc4c8], wallTop: 0xffffff, pier: 0xb08a5e, gantry: [0xffffff, 0x3fc4c8, 0x2f8fb0], banner: ['#2f9fc0', '#1f7a99', '#ffffff', '#ffd27a'], ramp: 0xffd27a },
+  jungle: { boardwalk: true, bumper: [0x7a5030, 0x8a6038, 0x5f8f3a], wallTop: 0x6a9a48, pier: 0x6e4a2c, gantry: [0xc9a46a, 0x3f8a4a, 0x2a5a36], banner: ['#3f8a4a', '#2a6036', '#fff2c4', '#ffd25a'], ramp: 0xc9a46a },
+  desert: { boardwalk: false, bumper: [0xd0704a, 0xfff0cf, 0xc99860], wallTop: 0xf3d6a4, pier: 0xd9a46c, gantry: [0xfff0cf, 0xd0704a, 0xb5683e], banner: ['#d0704a', '#a8502f', '#fff3d2', '#ffd27a'], ramp: 0xffd27a },
+  medina: { boardwalk: false, bumper: [0x2a6fb0, 0xf8f6ef, 0xd66aa0], wallTop: 0x2a6fb0, pier: 0xf2eee4, gantry: [0xf8f6ef, 0x2a6fb0, 0x1d4f86], banner: ['#2a6fb0', '#1d4f86', '#ffffff', '#f3d096'], ramp: 0xf3d096 },
+  city: { boardwalk: false, bumper: [0xffb84a, 0xf4f1ea, 0x5fd6e0], wallTop: 0xe9eaee, pier: 0x8f97a3, gantry: [0xf4f1ea, 0xffb84a, 0x3a3f4a], banner: ['#3a3f5a', '#272b40', '#fff0d2', '#ffb84a'], ramp: 0xffb84a },
+  aurora: { boardwalk: false, bumper: [0x7fb8ff, 0xf4fbff, 0x9fe8d4], wallTop: 0xf6fbff, pier: 0xb7cde4, gantry: [0xf4fbff, 0x7fb8ff, 0x3f5f9a], banner: ['#3f5f9a', '#2a4374', '#f4fbff', '#9fe8d4'], ramp: 0x9fe8d4 },
+  night: { boardwalk: false, bumper: [0xb7a6ff, 0xf3d096, 0x5b4fb0], wallTop: 0xcbbcff, pier: 0x4a4488, gantry: [0xdbd0ff, 0x5b4fb0, 0x2b2160], banner: ['#3a2f80', '#241c5a', '#fff7dc', '#f3d096'], ramp: 0xf3d096 },
+};
+
+// Robust merge: normalises index / attribute sets so mergeGeometries never fails; returns null if it still does.
+export function safeMerge(parts, dispose = true) {
+  const list0 = (parts || []).filter(Boolean);
+  if (!list0.length) return null;
+  const mixed = list0.some((p) => !p.index) && list0.some((p) => p.index);
+  let list = mixed ? list0.map((p) => (p.index ? p.toNonIndexed() : p)) : list0;
+  const common = Object.keys(list[0].attributes).filter((n) => list.every((p) => p.attributes[n]));
+  for (const p of list) for (const n of Object.keys(p.attributes)) if (!common.includes(n)) p.deleteAttribute(n);
+  for (const p of list) p.morphAttributes = {};
+  let g = null;
+  try { g = mergeGeometries(list); } catch (e) { g = null; }
+  if (dispose) { list0.forEach((p) => p.dispose()); if (mixed) list.forEach((p) => p.dispose()); }
+  return g || null;
+}
 
 const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const wrapAngle = (a) => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
@@ -38,16 +72,24 @@ function smoothCircular(arr, radius, passes = 1) {
   return src;
 }
 
+export function readQuality(renderer, opts = {}) {
+  const q = opts.quality || (renderer && renderer.userData && renderer.userData.quality) || globalThis.__lumenQuality || 'high';
+  return q === 'low' || q === 'medium' ? q : 'high';
+}
+
 export function createTrack(scene, renderer, opts = {}) {
   const def = opts.def || getTrackDef(opts.trackId);
   const mirror = !!opts.mirror;
+  const quality = readQuality(renderer, opts);
   const mx = mirror ? -1 : 1;
   const ml = mirror ? -1 : 1;          // mirrored lateral offsets
   const SCALE = def.scale || 1.15;
   const CP = def.cp.map(([x, y, z]) => [x * mx, y, z]);
   const LAKE = def.lake ? { x: def.lake.x * mx, z: def.lake.z, r: def.lake.r } : { x: 1e6, z: 1e6, r: 1 };
   const OPEN_BRIDGE = !!(def.lake && def.lake.open);
-  const theme = def.theme || 'beach';
+  const world = resolveWorld(def.theme);
+  const style = STYLE[world] || STYLE.meadow;
+  const pitKind = world === 'night' ? 'void' : 'water';
   const root = new THREE.Group();
   root.name = 'track';
   scene.add(root);
@@ -84,46 +126,7 @@ export function createTrack(scene, renderer, opts = {}) {
   const kS = smoothCircular(kRaw, 6, 2);
   const kWide = smoothCircular(kRaw, 22, 3);
 
-  // bridge factor (over the lagoon)
-  let bridge = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const d = Math.hypot(px[i] - LAKE.x, pz[i] - LAKE.z);
-    bridge[i] = 1 - smoothstep(LAKE.r - 5, LAKE.r + 28, d);
-  }
-  bridge = smoothCircular(bridge, 8, 1);
-
-  // wall offsets (distance from centerline to barrier inner face)
-  const wallBase = (side) => {
-    const w = new Float32Array(N);
-    for (let i = 0; i < N; i++) {
-      const outer = side > 0 ? Math.max(0, kS[i]) : Math.max(0, -kS[i]);
-      w[i] = HALF_W + 7 + Math.min(6, outer * 700);
-    }
-    return w;
-  };
-  const innerClamp = (w, side) => {
-    for (let i = 0; i < N; i++) {
-      const inner = side > 0 ? Math.max(0, -kS[i]) : Math.max(0, kS[i]);
-      if (inner > 1e-4) w[i] = Math.min(w[i], 1 / inner - 5);
-      w[i] = Math.max(HALF_W + 1.5, w[i]);
-      w[i] = w[i] * (1 - bridge[i]) + (HALF_W + 1.2) * bridge[i];
-    }
-    return w;
-  };
-  let wallR = innerClamp(smoothCircular(innerClamp(wallBase(1), 1), 18, 2), 1);
-  let wallL = innerClamp(smoothCircular(innerClamp(wallBase(-1), -1), 18, 2), -1);
-  const maxWall = Math.max(...wallR, ...wallL);
-
-  // racing line lateral offsets
-  const maxOff = HALF_W - 3;
-  const apex = new Float32Array(N);
-  for (let i = 0; i < N; i++) apex[i] = -clamp(kWide[i] * 160, -1, 1) * maxOff;
-  const lookA = Math.round(32 / ds);
-  let race = new Float32Array(N);
-  for (let i = 0; i < N; i++) race[i] = clamp(apex[i] - 0.55 * apex[(i + lookA) % N], -maxOff, maxOff);
-  race = smoothCircular(race, 14, 2);
-
-  // ------------------------------------------------------------------ spatial grid
+  // ------------------------------------------------------------------ spatial grid (needed by feature placement)
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (let i = 0; i < N; i++) {
     minX = Math.min(minX, px[i]); maxX = Math.max(maxX, px[i]);
@@ -167,6 +170,108 @@ export function createTrack(scene, renderer, opts = {}) {
     return best;
   }
 
+  const nearestToCP = (cpf) => {
+    const i0 = Math.floor(cpf) % CP.length, i1 = (i0 + 1) % CP.length, f = cpf - Math.floor(cpf);
+    const x = (CP[i0][0] + (CP[i1][0] - CP[i0][0]) * f) * SCALE;
+    const z = (CP[i0][2] + (CP[i1][2] - CP[i0][2]) * f) * SCALE;
+    return nearestGrid(x, z);
+  };
+  // sample range [a, b] (b may be < a: wraps) of a cpf range
+  const cpfRange = (r) => {
+    const a = nearestToCP(r.from), b = nearestToCP(r.to);
+    return [a, b >= a ? b : b + N];
+  };
+
+  // ------------------------------------------------------------------ clearance to other road sections
+  // clear[i] = horizontal distance from sample i to the closest sample that is > 90 m away along the road.
+  const clear = new Float32Array(N).fill(400);
+  {
+    const sep = Math.round(90 / ds);
+    for (let i = 0; i < N; i += 2) {
+      const cx = Math.floor((px[i] - gx0) / GRID_CELL), cz = Math.floor((pz[i] - gz0) / GRID_CELL);
+      let bd = Infinity;
+      for (let j = cz - 3; j <= cz + 3; j++) {
+        if (j < 0 || j >= gh) continue;
+        for (let k = cx - 3; k <= cx + 3; k++) {
+          if (k < 0 || k >= gw) continue;
+          for (const m of grid[j * gw + k]) {
+            let d = Math.abs(m - i); d = Math.min(d, N - d);
+            if (d < sep) continue;
+            const dx = px[m] - px[i], dz = pz[m] - pz[i], dd = dx * dx + dz * dz;
+            if (dd < bd) bd = dd;
+          }
+        }
+      }
+      clear[i] = Math.min(400, Math.sqrt(bd));
+      if (i + 1 < N) clear[i + 1] = clear[i];
+    }
+  }
+
+  // bridge factor: over the lake + declared viaduct ranges
+  let bridge = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const d = Math.hypot(px[i] - LAKE.x, pz[i] - LAKE.z);
+    bridge[i] = 1 - smoothstep(LAKE.r - 5, LAKE.r + 28, d);
+  }
+  for (const br of def.bridges || []) {
+    const [a, b] = cpfRange(br);
+    for (let ii = a; ii <= b; ii++) bridge[ii % N] = 1;
+  }
+  bridge = smoothCircular(bridge, 8, 1);
+
+  // wall offsets (distance from centerline to barrier inner face)
+  const wallBase = (side) => {
+    const w = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      const outer = side > 0 ? Math.max(0, kS[i]) : Math.max(0, -kS[i]);
+      w[i] = HALF_W + 7 + Math.min(6, outer * 700);
+    }
+    return w;
+  };
+  const innerClamp = (w, side) => {
+    for (let i = 0; i < N; i++) {
+      const inner = side > 0 ? Math.max(0, -kS[i]) : Math.max(0, kS[i]);
+      if (inner > 1e-4) w[i] = Math.min(w[i], 1 / inner - 5);
+      w[i] = Math.min(w[i], clear[i] / 2 - 1);
+      w[i] = Math.max(HALF_W + 1.5, w[i]);
+      w[i] = w[i] * (1 - bridge[i]) + (HALF_W + 1.2) * bridge[i];
+    }
+    return w;
+  };
+  const wallR = innerClamp(smoothCircular(innerClamp(wallBase(1), 1), 18, 2), 1);
+  const wallL = innerClamp(smoothCircular(innerClamp(wallBase(-1), -1), 18, 2), -1);
+
+  // shortcuts: open the inner barrier through a bend (with a funnel ramp at both ends)
+  const openR = new Uint8Array(N), openL = new Uint8Array(N);
+  const shortcutZones = [];
+  for (const sc of def.shortcuts || []) {
+    const [a, b] = cpfRange(sc);
+    let ksum = 0;
+    for (let ii = a; ii <= b; ii++) ksum += kWide[ii % N];
+    const side = ksum > 0 ? -1 : 1;           // turning left -> inner side is the left (-1)
+    const W = side > 0 ? wallR : wallL, open = side > 0 ? openR : openL;
+    const ramp = Math.max(6, Math.round(26 / ds));
+    for (let ii = a - ramp; ii <= b + ramp; ii++) {
+      const i = ((ii % N) + N) % N;
+      const f = ii < a ? (ii - (a - ramp)) / ramp : ii > b ? ((b + ramp) - ii) / ramp : 1;
+      const target = W[i] + (OPEN_W - W[i]) * smoothstep(0, 1, f);
+      if (target > W[i]) W[i] = target;
+      if (W[i] > HALF_W + 9) open[i] = 1;
+    }
+    shortcutZones.push({ s0: a, s1: b, side });
+  }
+  let maxWall = 0;
+  for (let i = 0; i < N; i++) maxWall = Math.max(maxWall, wallR[i], wallL[i]);
+
+  // racing line lateral offsets
+  const maxOff = HALF_W - 3;
+  const apex = new Float32Array(N);
+  for (let i = 0; i < N; i++) apex[i] = -clamp(kWide[i] * 160, -1, 1) * maxOff;
+  const lookA = Math.round(32 / ds);
+  let race = new Float32Array(N);
+  for (let i = 0; i < N; i++) race[i] = clamp(apex[i] - 0.55 * apex[(i + lookA) % N], -maxOff, maxOff);
+  race = smoothCircular(race, 14, 2);
+
   const WIN = 45;
   function nearest(x, z, hintT) {
     if (typeof hintT === 'number' && isFinite(hintT)) {
@@ -178,7 +283,14 @@ export function createTrack(scene, renderer, opts = {}) {
         if (d < bd) { bd = d; best = i; bk = k; }
       }
       const lim = maxWall + 8;
-      if (bd < lim * lim && Math.abs(bk) < WIN) { _nd2 = bd; return best; }
+      if (bd < lim * lim && Math.abs(bk) < WIN) {
+        // off the road (e.g. crossing a shortcut): another section may be closer
+        if (bd > (HALF_W + 2) * (HALF_W + 2)) {
+          const g = nearestGrid(x, z);
+          if (_nd2 < bd) return g;
+        }
+        _nd2 = bd; return best;
+      }
     }
     return nearestGrid(x, z);
   }
@@ -209,13 +321,6 @@ export function createTrack(scene, renderer, opts = {}) {
   const idxAtDist = (d) => ((((d / ds) % N) + N) % N);
 
   // ------------------------------------------------------------------ features
-  const nearestToCP = (cpf) => {
-    const i0 = Math.floor(cpf) % CP.length, i1 = (i0 + 1) % CP.length, f = cpf - Math.floor(cpf);
-    const x = (CP[i0][0] + (CP[i1][0] - CP[i0][0]) * f) * SCALE;
-    const z = (CP[i0][2] + (CP[i1][2] - CP[i0][2]) * f) * SCALE;
-    return nearestGrid(x, z);
-  };
-
   // Boost pads: s0/len in samples, lateral centre, half width
   const PAD_LEN = Math.max(3, Math.round(7 / ds));
   const boostPads = [];
@@ -248,7 +353,7 @@ export function createTrack(scene, renderer, opts = {}) {
     }
   }
 
-  // Coin lines (along the road)
+  // Coin (note) lines along the road
   const coinPositions = [];
   const coinStep = Math.max(1, Math.round(4 / ds));
   for (const cl of def.coins || []) {
@@ -264,15 +369,16 @@ export function createTrack(scene, renderer, opts = {}) {
   // Track hazards (resolved to track parameter + lateral offset; hazards.js animates them)
   const hazardDefs = (def.hazards || []).map((h) => {
     const i = nearestToCP(h.at);
-    return { ...h, t: i / N, lat: (h.lat || 0) * ml };
+    return { ...h, t: i / N, lat: (h.lat || 0) * ml, world };
   });
 
   // ------------------------------------------------------------------ public API
   const wrapDelta = (s, s0) => { let d = s - s0; if (d < 0) d += N; return d; };
+  const UP = new THREE.Vector3(0, 1, 0);
 
   function getSurfaceInfo(pos, hintT) {
     if (!pos || !isFinite(pos.x) || !isFinite(pos.z)) {
-      return { height: 0, normal: new THREE.Vector3(0, 1, 0), surface: 'road', t: 0, lateral: 0, onRoad: true };
+      return { height: 0, normal: UP.clone(), surface: 'road', t: 0, lateral: 0, onRoad: true };
     }
     const pr = project(pos.x, pos.z, hintT);
     const { a, b, f } = pr;
@@ -360,13 +466,11 @@ export function createTrack(scene, renderer, opts = {}) {
 
   // ------------------------------------------------------------------ geometry helpers
   // Extrude a cross-section polyline along samples [i0, i1] (i1 may exceed N; wraps).
-  // profile(i) -> [[lat, dy], ...]; uv: across from `across` array or lateral/acrossScale;
-  // along = (i - i0) * ds / alongScale * alongSign.
   function extrude(i0, i1, profile, { across = null, acrossScale = 1, alongScale = 1, alongSign = 1, swap = false, step = 1 } = {}) {
     const rings = [];
     for (let i = i0; i < i1; i += step) rings.push(i);
     rings.push(i1);
-    const m = profile(i0 % N).length;
+    const m = profile(((Math.round(i0) % N) + N) % N, i0).length;
     const pos = new Float32Array(rings.length * m * 3);
     const uv = new Float32Array(rings.length * m * 2);
     let p = 0, q = 0;
@@ -416,79 +520,105 @@ export function createTrack(scene, renderer, opts = {}) {
     return out;
   }
 
-  const addMesh = (geo, mat, { cast = false, receive = true, name = '' } = {}) => {
-    const mesh = new THREE.Mesh(geo, mat);
+  const addMesh = (geo, material, { cast = false, receive = true, name = '' } = {}) => {
+    const mesh = new THREE.Mesh(geo, material);
     mesh.castShadow = cast; mesh.receiveShadow = receive; mesh.name = name;
     root.add(mesh);
     disposables.push(geo);
     return mesh;
   };
-  const mat = (m) => { disposables.push(m); if (m.map) disposables.push(m.map); return m; };
+  const addMerged = (geos, material, opts2) => {
+    if (!geos.length) return null;
+    const g = geos.length === 1 ? geos[0] : safeMerge(geos);
+    return g ? addMesh(g, material, opts2) : null;
+  };
+  const mat = (m) => { disposables.push(m); if (m.map) disposables.push(m.map); if (m.emissiveMap && m.emissiveMap !== m.map) disposables.push(m.emissiveMap); return m; };
 
   // ------------------------------------------------------------------ road surface
-  const asphaltTex = TX.makeAsphaltTexture();
-  const roadMat = mat(new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.88, metalness: 0.0, color: ROAD_TINT[theme] ?? 0xffffff }));
-  for (const [a, b] of runs((i) => !gapMask[i], 2)) {
-    addMesh(extrude(a, b, () => [[-HALF_W, 0], [0, 0], [HALF_W, 0]], { across: [0, 0.5, 1], alongScale: 22, step: 1 }), roadMat, { name: 'road' });
+  const roadMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeRoadTexture(world), roughness: 0.88, metalness: 0.0 }));
+  const deckRoadMat = style.boardwalk ? mat(new THREE.MeshStandardMaterial({ map: TX.makeBoardwalkTexture(world), roughness: 0.8 })) : roadMat;
+  {
+    const roadGeos = [], deckGeos2 = [];
+    for (const [a, b] of runs((i) => !gapMask[i], 2)) {
+      if (deckRoadMat === roadMat) { roadGeos.push(extrude(a, b, () => [[-HALF_W, 0], [0, 0], [HALF_W, 0]], { across: [0, 0.5, 1], alongScale: 22 })); continue; }
+      // split into land road / boardwalk sub-runs
+      let s = a, onDeck = bridge[a % N] >= 0.5;
+      for (let ii = a + 1; ii <= b; ii++) {
+        const d = bridge[ii % N] >= 0.5;
+        if (d !== onDeck || ii === b) {
+          const g = extrude(s, ii, () => [[-HALF_W, 0], [0, 0], [HALF_W, 0]], { across: [0, 0.5, 1], alongScale: onDeck ? 12 : 22 });
+          (onDeck ? deckGeos2 : roadGeos).push(g);
+          s = ii; onDeck = d;
+        }
+      }
+    }
+    addMerged(roadGeos, roadMat, { name: 'road' });
+    addMerged(deckGeos2, deckRoadMat, { name: 'boardwalk' });
   }
 
-  // Curbs through corners (raised red/white rumble strips)
-  const curbMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeCurbTexture(), roughness: 0.6 }));
+  // Curbs through corners (raised two-colour rumble strips)
+  const curbMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeCurbTexture(world), roughness: 0.6 }));
   const curbMask = new Uint8Array(N);
   for (let i = 0; i < N; i++) if (Math.abs(kS[i]) > 1 / 240 && bridge[i] < 0.2) {
     for (let k = -30; k <= 30; k++) curbMask[(i + k + N) % N] = 1;
   }
-  for (let i = 0; i < N; i++) if (bridge[i] > 0.05) curbMask[i] = 0;
+  for (let i = 0; i < N; i++) if (bridge[i] > 0.05 || gapMask[i]) curbMask[i] = 0;
   const curbGeos = [];
   for (const [a, b] of runs((i) => curbMask[i], 10)) {
     curbGeos.push(extrude(a, b, () => [[HALF_W - 1.4, 0.0], [HALF_W - 1.1, 0.08], [HALF_W + 0.7, 0.08], [HALF_W + 0.9, -0.05]], { across: [0, 0.15, 0.9, 1], alongScale: 4 }));
     curbGeos.push(extrude(a, b, () => [[-HALF_W - 0.9, -0.05], [-HALF_W - 0.7, 0.08], [-HALF_W + 1.1, 0.08], [-HALF_W + 1.4, 0.0]], { across: [0, 0.1, 0.85, 1], alongScale: 4 }));
   }
-  if (curbGeos.length) addMesh(mergeGeometries(curbGeos), curbMat, { name: 'curbs' });
-  curbGeos.forEach((g) => g.dispose());
+  addMerged(curbGeos, curbMat, { name: 'curbs' });
 
-  // Offroad bands (grass) + bridge deck edge (concrete)
-  const grassMat = mat(new THREE.MeshStandardMaterial({ map: (TX[OFFROAD_TEX[theme]] || TX.makeGrassTexture)(), roughness: 1 }));
-  grassMat.map.repeat.set(1, 1);
-  const concreteMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeConcreteTexture(), roughness: 0.9 }));
+  // Offroad bands + bridge deck edges. Bands stop before they would fold over (tight inner side / shortcuts).
+  const grassMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeOffroadTexture(world), roughness: 1 }));
+  const deckMat = mat(new THREE.MeshStandardMaterial({ map: style.boardwalk ? TX.makeBoardwalkTexture(world) : TX.makeConcreteTexture(world), roughness: 0.9 }));
+  const bandOuter = (i, side) => {
+    const W = side > 0 ? wallR[i] : wallL[i];
+    const inner = side > 0 ? Math.max(0, -kS[i]) : Math.max(0, kS[i]);
+    let o = W + 0.35;
+    if (inner > 1e-4) o = Math.min(o, 1 / inner - 1.5);
+    o = Math.min(o, clear[i] / 2 - 0.5);
+    return Math.max(HALF_W + 0.5, o);
+  };
   const bandGeos = [], deckGeos = [];
   for (const [a, b] of runs((i) => bridge[i] < 0.5, 5)) {
-    bandGeos.push(extrude(a, b, (i) => [[HALF_W - 0.2, -0.03], [wallR[i] + 0.35, -0.03]], { acrossScale: 6, alongScale: 6 }));
-    bandGeos.push(extrude(a, b, (i) => [[-wallL[i] - 0.35, -0.03], [-HALF_W + 0.2, -0.03]], { acrossScale: 6, alongScale: 6 }));
+    bandGeos.push(extrude(a, b, (i) => [[HALF_W - 0.2, -0.03], [bandOuter(i, 1), -0.03]], { acrossScale: 6, alongScale: 6 }));
+    bandGeos.push(extrude(a, b, (i) => [[-bandOuter(i, -1), -0.03], [-HALF_W + 0.2, -0.03]], { acrossScale: 6, alongScale: 6 }));
   }
-  const bridgeRuns = runs((i) => bridge[i] >= 0.5 && !gapMask[i], 5);
-  for (const [a, b] of bridgeRuns) {
-    deckGeos.push(extrude(a, b, (i) => [[HALF_W - 0.2, -0.02], [wallR[i] + 0.8, -0.02]], { acrossScale: 4, alongScale: 4 }));
-    deckGeos.push(extrude(a, b, (i) => [[-wallL[i] - 0.8, -0.02], [-HALF_W + 0.2, -0.02]], { acrossScale: 4, alongScale: 4 }));
-    // deck sides + underside
-    deckGeos.push(extrude(a, b, (i) => [[wallR[i] + 0.8, -0.02], [wallR[i] + 0.8, -2.4]], { acrossScale: 4, alongScale: 4 }));
-    deckGeos.push(extrude(a, b, (i) => [[-wallL[i] - 0.8, -2.4], [-wallL[i] - 0.8, -0.02]], { acrossScale: 4, alongScale: 4 }));
-    deckGeos.push(extrude(a, b, (i) => [[wallR[i] + 0.8, -2.4], [-wallL[i] - 0.8, -2.4]], { acrossScale: 4, alongScale: 4 }));
+  const bridgeRuns = runs((i) => bridge[i] >= 0.5, 5);
+  for (const [c0, c1] of runs((i) => bridge[i] >= 0.5 && !gapMask[i], 2)) {
+    deckGeos.push(extrude(c0, c1, (i) => [[HALF_W - 0.2, -0.02], [wallR[i] + 0.8, -0.02]], { acrossScale: 4, alongScale: 4 }));
+    deckGeos.push(extrude(c0, c1, (i) => [[-wallL[i] - 0.8, -0.02], [-HALF_W + 0.2, -0.02]], { acrossScale: 4, alongScale: 4 }));
+    deckGeos.push(extrude(c0, c1, (i) => [[wallR[i] + 0.8, -0.02], [wallR[i] + 0.8, -2.4]], { acrossScale: 4, alongScale: 4 }));
+    deckGeos.push(extrude(c0, c1, (i) => [[-wallL[i] - 0.8, -2.4], [-wallL[i] - 0.8, -0.02]], { acrossScale: 4, alongScale: 4 }));
+    deckGeos.push(extrude(c0, c1, (i) => [[wallR[i] + 0.8, -2.4], [-wallL[i] - 0.8, -2.4]], { acrossScale: 4, alongScale: 4 }));
   }
-  if (bandGeos.length) addMesh(mergeGeometries(bandGeos), grassMat, { name: 'offroad' });
-  if (deckGeos.length) addMesh(mergeGeometries(deckGeos), concreteMat, { name: 'deck', cast: true });
-  bandGeos.forEach((g) => g.dispose()); deckGeos.forEach((g) => g.dispose());
+  addMerged(bandGeos, grassMat, { name: 'offroad' });
+  addMerged(deckGeos, deckMat, { name: 'deck', cast: true });
 
   // ------------------------------------------------------------------ barriers
-  // type per side: 'rail' (bridge), 'tires' (outside of tight corners), 'wall'
+  // type per side: 'rail' (bridge), 'tires' (bumpers outside tight corners), 'wall', 'none' (open)
   const barrierType = (side) => {
     const typ = new Array(N);
     const tight = new Uint8Array(N);
+    const open = side > 0 ? openR : openL;
     for (let i = 0; i < N; i++) {
       const outer = side > 0 ? kS[i] > 1 / 55 : kS[i] < -1 / 55;
       if (outer) for (let k = -18; k <= 18; k++) tight[(i + k + N) % N] = 1;
     }
-    for (let i = 0; i < N; i++) typ[i] = bridge[i] >= 0.5 ? (OPEN_BRIDGE ? 'none' : 'rail') : tight[i] ? 'tires' : 'wall';
+    for (let i = 0; i < N; i++) {
+      typ[i] = open[i] ? 'none' : bridge[i] >= 0.5 ? (OPEN_BRIDGE ? 'none' : (gapMask[i] ? 'none' : 'rail')) : tight[i] ? 'tires' : 'wall';
+    }
     return typ;
   };
   const typeR = barrierType(1), typeL = barrierType(-1);
 
-  const wallTex = TX.makeBarrierTexture();
-  const wallMat = mat(new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.55 }));
-  const wallTopMat = mat(new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.5 }));
-  const railMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeRailTexture(), roughness: 0.45 }));
+  const wallMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeBarrierTexture(world), roughness: 0.6 }));
+  const wallTopMat = mat(new THREE.MeshStandardMaterial({ color: style.wallTop, roughness: 0.55 }));
+  const railMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeRailTexture(world), roughness: 0.5 }));
   const WALL_H = 1.25, WALL_T = 0.7, TEX_LEN = 9.6;
-  const vMap = (y) => (y + 0.05) / (WALL_H + 0.05);
+  const vMap = (y) => (y + 1.5) / (WALL_H + 1.5);
   const wallFaces = [], wallTops = [], railFaces = [];
   for (const side of [1, -1]) {
     const typ = side > 0 ? typeR : typeL;
@@ -497,32 +627,32 @@ export function createTrack(scene, renderer, opts = {}) {
       const faces = kind === 'wall' ? wallFaces : railFaces;
       const bottom = kind === 'rail' ? -2.4 : -1.5;
       const h = kind === 'rail' ? 1.1 : WALL_H;
+      const vm = kind === 'rail' ? ((y) => (y + 0.02) / (h + 0.02)) : vMap;
       for (const [a, b] of runs((i) => typ[i] === kind, 4)) {
         if (side > 0) {
-          faces.push(extrude(a, b, (i) => [[W[i], bottom], [W[i], h]], { across: [vMap(bottom), vMap(h)], alongScale: TEX_LEN, alongSign: -1, swap: true }));
+          faces.push(extrude(a, b, (i) => [[W[i], bottom], [W[i], h]], { across: [vm(bottom), vm(h)], alongScale: TEX_LEN, alongSign: -1, swap: true }));
           wallTops.push(extrude(a, b, (i) => [[W[i], h], [W[i] + WALL_T, h]], { across: [0, 1], alongScale: TEX_LEN }));
-          faces.push(extrude(a, b, (i) => [[W[i] + WALL_T, h], [W[i] + WALL_T, bottom]], { across: [vMap(h), vMap(bottom)], alongScale: TEX_LEN, swap: true }));
+          faces.push(extrude(a, b, (i) => [[W[i] + WALL_T, h], [W[i] + WALL_T, bottom]], { across: [vm(h), vm(bottom)], alongScale: TEX_LEN, swap: true }));
         } else {
-          faces.push(extrude(a, b, (i) => [[-W[i] - WALL_T, bottom], [-W[i] - WALL_T, h]], { across: [vMap(bottom), vMap(h)], alongScale: TEX_LEN, alongSign: -1, swap: true }));
+          faces.push(extrude(a, b, (i) => [[-W[i] - WALL_T, bottom], [-W[i] - WALL_T, h]], { across: [vm(bottom), vm(h)], alongScale: TEX_LEN, alongSign: -1, swap: true }));
           wallTops.push(extrude(a, b, (i) => [[-W[i] - WALL_T, h], [-W[i], h]], { across: [0, 1], alongScale: TEX_LEN }));
-          faces.push(extrude(a, b, (i) => [[-W[i], h], [-W[i], bottom]], { across: [vMap(h), vMap(bottom)], alongScale: TEX_LEN, swap: true }));
+          faces.push(extrude(a, b, (i) => [[-W[i], h], [-W[i], bottom]], { across: [vm(h), vm(bottom)], alongScale: TEX_LEN, swap: true }));
         }
       }
     }
   }
-  if (wallFaces.length) addMesh(mergeGeometries(wallFaces), wallMat, { cast: true, name: 'walls' });
-  if (railFaces.length) {
-    railMat.map.repeat.set(1 / 2.5, 1);
-    addMesh(mergeGeometries(railFaces), railMat, { cast: true, name: 'rails' });
-  }
-  if (wallTops.length) addMesh(mergeGeometries(wallTops), wallTopMat, { cast: false, name: 'wallTops' });
-  [...wallFaces, ...railFaces, ...wallTops].forEach((g) => g.dispose());
+  // the barrier texture is 1024 px for 9.6 m: show its visible top band only
+  wallMat.map.repeat.set(1, 1);
+  addMerged(wallFaces, wallMat, { cast: true, name: 'walls' });
+  if (railFaces.length) railMat.map.repeat.set(1 / 2.5, 1);
+  addMerged(railFaces, railMat, { cast: true, name: 'rails' });
+  addMerged(wallTops, wallTopMat, { cast: false, name: 'wallTops' });
 
-  // Tire stacks (instanced) — inner face sits exactly on the collision line.
+  // Bumper stacks (instanced, themed: hay bales, buoys, logs, pots…) — inner face on the collision line.
   {
     const TR = 0.9;
-    const tireGeo = new THREE.CylinderGeometry(TR, TR, 0.42, 14, 1);
-    const tireMat = mat(new THREE.MeshStandardMaterial({ roughness: 0.8 }));
+    const tireGeo = new THREE.CylinderGeometry(TR, TR, 0.42, 12, 1);
+    const tireMat = mat(new THREE.MeshStandardMaterial({ roughness: 0.75 }));
     const places = [];
     for (const side of [1, -1]) {
       const typ = side > 0 ? typeR : typeL;
@@ -538,9 +668,8 @@ export function createTrack(scene, renderer, opts = {}) {
         }
       }
     }
-    const colors = [new THREE.Color(0xe8322f), new THREE.Color(0xf7f7f7), new THREE.Color(0x1e6fe8), new THREE.Color(0xf7f7f7)];
-    const dark = new THREE.Color(0x2a2c31);
-    const im = new THREE.InstancedMesh(tireGeo, tireMat, places.length * 3);
+    const [c0, c1, c2] = style.bumper.map((h) => new THREE.Color(h));
+    const im = new THREE.InstancedMesh(tireGeo, tireMat, Math.max(1, places.length * 3));
     const m4 = new THREE.Matrix4();
     let n = 0;
     for (const p of places) {
@@ -548,13 +677,13 @@ export function createTrack(scene, renderer, opts = {}) {
         m4.makeRotationY(p.stack * 0.7 + l);
         m4.setPosition(p.x, p.y + 0.21 + l * 0.44, p.z);
         im.setMatrixAt(n, m4);
-        im.setColorAt(n, l === 1 ? colors[(p.stack % 2) * 2] : (l === 0 ? dark : colors[1]));
+        im.setColorAt(n, l === 1 ? (p.stack % 2 ? c2 : c0) : c1);
         n++;
       }
     }
     im.count = n;
-    im.castShadow = true; im.receiveShadow = true;
-    im.name = 'tires';
+    im.castShadow = quality !== 'low'; im.receiveShadow = true;
+    im.name = 'bumpers';
     root.add(im);
     disposables.push(tireGeo);
   }
@@ -562,13 +691,14 @@ export function createTrack(scene, renderer, opts = {}) {
   // Bridge piers
   {
     const pierGeo = new THREE.BoxGeometry(1, 1, 1);
-    const pierMat = mat(new THREE.MeshStandardMaterial({ color: 0xd9d4c7, roughness: 0.85 }));
+    const pierMat = mat(new THREE.MeshStandardMaterial({ color: style.pier, roughness: 0.85 }));
     const mats = [];
     for (const [a, b] of bridgeRuns) {
       const span = Math.round(26 / ds);
       for (let ii = a + Math.round(span / 2); ii < b - span / 3; ii += span) {
         const i = ii % N;
-        const top = py[i] - 2.4, bottom = WATER_LEVEL - 12;
+        if (gapMask[i]) continue;
+        const top = py[i] - 2.4, bottom = WATER_LEVEL - 14;
         const hgt = top - bottom;
         const m4 = new THREE.Matrix4().makeRotationY(head[i]);
         m4.scale(new THREE.Vector3(wallR[i] + wallL[i] - 2, hgt, 2.6));
@@ -581,6 +711,7 @@ export function createTrack(scene, renderer, opts = {}) {
     mats.forEach((m4, k) => im.setMatrixAt(k, m4));
     im.count = mats.length;
     im.castShadow = true; im.receiveShadow = true;
+    im.name = 'piers';
     root.add(im);
     disposables.push(pierGeo);
   }
@@ -590,15 +721,11 @@ export function createTrack(scene, renderer, opts = {}) {
   const boostMat = mat(new THREE.MeshBasicMaterial({
     map: boostTex, toneMapped: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   }));
-  boostMat.color.setScalar(1.25);
+  boostMat.color.setScalar(1.2);
+  addMerged(boostPads.map((p) => extrude(p.s0, p.s0 + p.len, () => [[p.lat - p.hw, 0.04], [p.lat + p.hw, 0.04]], { across: [0, 1], alongScale: p.len * ds / 2 })), boostMat, { name: 'boostPads' });
   {
-    const geos = boostPads.map((p) => extrude(p.s0, p.s0 + p.len, () => [[p.lat - p.hw, 0.04], [p.lat + p.hw, 0.04]], { across: [0, 1], alongScale: p.len * ds / 2 }));
-    addMesh(mergeGeometries(geos), boostMat, { name: 'boostPads' });
-    geos.forEach((g) => g.dispose());
-  }
-  {
-    const rampMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeRampTexture(), roughness: 0.5, side: THREE.DoubleSide }));
-    const sideMat = mat(new THREE.MeshStandardMaterial({ color: 0xffc21a, roughness: 0.6, side: THREE.DoubleSide }));
+    const rampMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeRampTexture(world), roughness: 0.5, side: THREE.DoubleSide }));
+    const sideMat = mat(new THREE.MeshStandardMaterial({ color: style.ramp, roughness: 0.6, side: THREE.DoubleSide }));
     const tops = [], sides = [];
     for (const r of ramps) {
       const hAt = (ii) => r.h * clamp((ii - r.s0) / r.len, 0, 1);
@@ -608,18 +735,16 @@ export function createTrack(scene, renderer, opts = {}) {
       const e = (r.s0 + r.len) % N;
       sides.push(extrude(e, e + 0.001, (i, ii) => ii === e ? [[-r.hw, r.h + 0.03], [r.hw, r.h + 0.03]] : [[-r.hw, -0.1], [r.hw, -0.1]], { across: [0, 1] }));
     }
-    addMesh(mergeGeometries(tops), rampMat, { cast: true, name: 'ramps' });
-    addMesh(mergeGeometries(sides), sideMat, { cast: true, name: 'rampSides' });
-    [...tops, ...sides].forEach((g) => g.dispose());
+    addMerged(tops, rampMat, { cast: true, name: 'ramps' });
+    addMerged(sides, sideMat, { cast: true, name: 'rampSides' });
   }
 
   // ------------------------------------------------------------------ start line, grid, gantry
-  const decalMat = (opts) => mat(new THREE.MeshStandardMaterial({ roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, ...opts }));
+  const decalMat = (o) => mat(new THREE.MeshStandardMaterial({ roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, ...o }));
   {
     const chk = TX.makeCheckerTexture(12, 2);
     const w = Math.max(2, Math.round(1.5 / ds));
     addMesh(extrude(N - w, N + w, () => [[-HALF_W, 0.02], [HALF_W, 0.02]], { across: [0, 1], alongScale: 2 * w * ds }), decalMat({ map: chk }), { name: 'startLine' });
-    // grid slot brackets
     const slotGeos = [];
     for (const sp of startPositions) {
       const h = sp.heading;
@@ -635,57 +760,61 @@ export function createTrack(scene, renderer, opts = {}) {
       addBar(0.3, 1.6, 1.3, 1.65);
       addBar(0.3, 1.6, 1.3, -1.65);
     }
-    addMesh(mergeGeometries(slotGeos), decalMat({ color: 0xffffff }), { name: 'gridMarks' });
-    slotGeos.forEach((g) => g.dispose());
+    addMerged(slotGeos, decalMat({ color: 0xfff7dc }), { name: 'gridMarks' });
   }
 
-  // Gantry arch with banner + start lights
+  // Gantry arch: two striped pillars topped with stars, a ribbon banner, a lamp housing (merged where possible)
   const lamps = [];
   {
     const g = new THREE.Group();
     g.position.set(px[0], py[0], pz[0]);
     g.rotation.y = head[0];
+    g.name = 'gantry';
     // local frame: +Z forward, +X = left (right is -X)
     const xL = wallL[0] + 2.2, xR = -(wallR[0] + 2.2);
-    const pillarMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeStripeTexture('#ffffff', '#e8322f', 10), roughness: 0.5 }));
-    pillarMat.map.rotation = Math.PI / 2;
-    const pGeo = new THREE.CylinderGeometry(0.9, 1.1, 12, 16);
-    disposables.push(pGeo);
+    const [cA, cB, cC] = style.gantry.map((h) => new THREE.Color(h));
+    const vc = (geo, col) => {
+      const gg = geo.index ? geo.toNonIndexed() : geo;
+      if (gg !== geo) geo.dispose();
+      gg.deleteAttribute('uv');
+      const n = gg.attributes.position.count, arr = new Float32Array(n * 3);
+      for (let k = 0; k < n; k++) { arr[k * 3] = col.r; arr[k * 3 + 1] = col.g; arr[k * 3 + 2] = col.b; }
+      gg.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      return gg;
+    };
+    const parts = [];
     for (const x of [xL, xR]) {
-      const p = new THREE.Mesh(pGeo, pillarMat);
-      p.position.set(x, 6, 0); p.castShadow = true; g.add(p);
+      for (let k = 0; k < 6; k++) parts.push(vc(new THREE.CylinderGeometry(0.95, 1.05, 2, 14).translate(x, 1 + k * 2, 0), k % 2 ? cB : cA));
+      parts.push(vc(new THREE.SphereGeometry(1.25, 14, 10).translate(x, 12.6, 0), cC));
+      // star on top
+      const st = new THREE.OctahedronGeometry(1.0, 0).scale(1, 1.3, 0.35).translate(x, 14.6, 0);
+      parts.push(vc(st, new THREE.Color(0xedc371)));
     }
     const span = xL - xR + 2.5;
-    const bannerTex = TX.makeBannerTexture(def.banner || 'TURBO KART RALLY');
+    parts.push(vc(new THREE.BoxGeometry(span, 0.5, 1.6).translate((xL + xR) / 2, 12.75, 0), cC));
+    parts.push(vc(new THREE.BoxGeometry(span, 0.5, 1.6).translate((xL + xR) / 2, 9.25, 0), cC));
+    parts.push(vc(new THREE.BoxGeometry(6.5, 2, 0.8).translate(0, 7.9, -0.4), new THREE.Color(0x2b2f45)));
+    const frameGeo = safeMerge(parts) || new THREE.BufferGeometry();
+    const frame = new THREE.Mesh(frameGeo, mat(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55 })));
+    frame.castShadow = true;
+    disposables.push(frameGeo);
+    g.add(frame);
+    const bannerTex = TX.makeBannerTexture((def.banner || def.short || def.name || 'LUMEN KART').toUpperCase(), style.banner);
     disposables.push(bannerTex);
-    const beamSide = mat(new THREE.MeshStandardMaterial({ color: 0xc81e1e, roughness: 0.5 }));
-    const bannerMat = mat(new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.5, emissive: 0x220000 }));
-    const beamGeo = new THREE.BoxGeometry(span, 3, 1.4);
-    disposables.push(beamGeo);
-    const beam = new THREE.Mesh(beamGeo, [beamSide, beamSide, beamSide, beamSide, bannerMat, bannerMat]);
-    beam.position.set((xL + xR) / 2, 11, 0); beam.castShadow = true;
-    g.add(beam);
-    // light housing facing the grid (-Z side)
-    const houseGeo = new THREE.BoxGeometry(6.5, 2, 0.8);
-    disposables.push(houseGeo);
-    const house = new THREE.Mesh(houseGeo, mat(new THREE.MeshStandardMaterial({ color: 0x1b1d24, roughness: 0.4 })));
-    house.position.set(0, 8.4, -0.4); g.add(house);
-    const lampGeo = new THREE.SphereGeometry(0.62, 16, 12);
+    const bannerGeo = new THREE.PlaneGeometry(span - 0.4, 3);
+    disposables.push(bannerGeo);
+    const bannerMat = mat(new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.6, side: THREE.DoubleSide }));
+    const banner = new THREE.Mesh(bannerGeo, bannerMat);
+    banner.position.set((xL + xR) / 2, 11, -0.05);
+    banner.rotation.y = Math.PI;   // readable from the grid
+    g.add(banner);
+    const lampGeo = new THREE.SphereGeometry(0.62, 14, 10);
     disposables.push(lampGeo);
     for (let k = 0; k < 3; k++) {
-      const lm = mat(new THREE.MeshStandardMaterial({ color: 0x331111, emissive: 0x000000, roughness: 0.3 }));
+      const lm = mat(new THREE.MeshStandardMaterial({ color: 0x3a3450, emissive: 0x000000, roughness: 0.3 }));
       const lamp = new THREE.Mesh(lampGeo, lm);
-      lamp.position.set((k - 1) * 2, 8.4, -0.85);
+      lamp.position.set((k - 1) * 2, 7.9, -0.85);
       g.add(lamp); lamps.push(lm);
-    }
-    // checkered flags on top of pillars
-    const flagGeo = new THREE.PlaneGeometry(3, 2, 1, 1).translate(1.5, 0, 0);
-    disposables.push(flagGeo);
-    const chkMat = mat(new THREE.MeshStandardMaterial({ map: TX.makeCheckerTexture(6, 4), side: THREE.DoubleSide, roughness: 0.8 }));
-    for (const x of [xL, xR]) {
-      const f = new THREE.Mesh(flagGeo, chkMat);
-      f.position.set(x, 13.2, 0); f.rotation.y = Math.PI / 2;
-      g.add(f);
     }
     root.add(g);
   }
@@ -694,20 +823,37 @@ export function createTrack(scene, renderer, opts = {}) {
       const on = k < n;
       m.emissive.setHex(on ? color : 0x000000);
       m.emissiveIntensity = on ? 3 : 0;
-      m.color.setHex(on ? color : 0x331111);
+      m.color.setHex(on ? color : 0x3a3450);
     });
   };
   let lampTimer = 0;
   const unsub = [
-    bus.on('race:countdown', (d) => { const n = d && d.n; setLamps(n === 3 ? 1 : n === 2 ? 2 : 3, 0xff2a1a); lampTimer = 0; }),
-    bus.on('race:go', () => { setLamps(3, 0x22ff55); lampTimer = 3; }),
+    bus.on('race:countdown', (d) => { const n = d && d.n; setLamps(n === 3 ? 1 : n === 2 ? 2 : 3, 0xff8a5c); lampTimer = 0; }),
+    bus.on('race:go', () => { setLamps(3, 0x7dffb0); lampTimer = 3; }),
   ];
+
+  // points along the invisible edge of shortcut openings (environment dresses them with hedges/flowers)
+  const openEdges = [];
+  for (const z of shortcutZones) {
+    const W = z.side > 0 ? wallR : wallL;
+    const step = Math.max(1, Math.round(3 / ds));
+    for (let ii = z.s0 - Math.round(40 / ds); ii <= z.s1 + Math.round(40 / ds); ii += step) {
+      const i = ((ii % N) + N) % N;
+      const w = W[i];
+      if (w <= HALF_W + 8 || w >= OPEN_W - 0.5) continue;
+      const inner = z.side > 0 ? Math.max(0, -kS[i]) : Math.max(0, kS[i]);
+      if (inner > 1e-4 && w > 1 / inner - 2) continue;
+      if (w > clear[i] / 2 + 6) continue;
+      openEdges.push({ x: px[i] + rx[i] * z.side * (w + 1.2), z: pz[i] + rz[i] * z.side * (w + 1.2), y: py[i], i });
+    }
+  }
 
   // ------------------------------------------------------------------ environment
   const layout = {
-    N, ds, length, px, py, pz, rx, rz, tx, tz, head, kS, wallL, wallR, bridge, halfWidth: HALF_W,
+    N, ds, length, px, py, pz, rx, rz, tx, tz, head, kS, wallL, wallR, bridge, halfWidth: HALF_W, clear,
     nearest: (x, z, noFallback = false) => { const i = nearestGrid(x, z, noFallback); return { i, d2: _nd2 }; },
-    lake: LAKE, waterLevel: WATER_LEVEL, theme, openBridge: OPEN_BRIDGE, gapMask,
+    lake: LAKE, waterLevel: WATER_LEVEL, theme: world, world, openBridge: OPEN_BRIDGE, gapMask, openR, openL,
+    shortcutZones, openEdges, quality, pitKind, def, mirror,
     bounds: { minX, maxX, minZ, maxZ },
     boostPads, ramps, startPositions,
   };
@@ -716,13 +862,18 @@ export function createTrack(scene, renderer, opts = {}) {
   // ------------------------------------------------------------------ Track object
   Object.assign(track, {
     name: def.name,
+    names: def.names || { fr: def.name, en: def.name },
     id: def.id,
     def,
-    theme,
+    theme: world,
+    world,
+    pitKind,
+    quality,
     mirror,
     coinPositions,
     hazardDefs,
     gaps: gaps.map((g) => ({ t0: g.s0 / N, t1: ((g.s0 + g.len) % N) / N })),
+    shortcuts: shortcutZones.map((z) => ({ t0: (z.s0 % N) / N, t1: (z.s1 % N) / N, side: z.side })),
     /** World point at track parameter t with lateral offset (+ = right). */
     pointAt(t, lat = 0, out = new THREE.Vector3()) {
       const s = (((t % 1) + 1) % 1) * N, a = Math.floor(s) % N, b = (a + 1) % N, f = s - Math.floor(s);

@@ -5,8 +5,9 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 
-const TRACKS = new Set(['palm-cove', 'frosty-peaks', 'sunset-canyon', 'lava-keep', 'alpine-rush', 'neon-harbor']);
-const CHARS = new Set(['lumen','zina','pip','coralie','rivo','jagu','kibo','nox']);
+// Lumen Kart circuit ids (docs/GAME_DESIGN.md §5). Original engine ids are kept for the four legacy courses.
+export const TRACKS = new Set(['meadow', 'palm-cove', 'jungle', 'sunset-canyon', 'medina', 'city', 'frosty-peaks', 'lava-keep']);
+export const CHARS = new Set(['lumen','zina','pip','coralie','rivo','jagu','kibo','nox']);
 const fail = message => { throw new Error(message); };
 const finite = (n, lo, hi) => typeof n === 'number' && Number.isFinite(n) && n >= lo && n <= hi;
 function config(value = {}) {
@@ -50,7 +51,7 @@ export function createRelay({ port = 8787, host = '0.0.0.0', allowedOrigins = []
       const file = resolve(base, '.' + (pathname === '/' ? '/index.html' : pathname));
       if (!file.startsWith(base + sep)) throw new Error('Invalid path');
       const data = await readFile(file);
-      const mime = { '.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.svg':'image/svg+xml', '.png':'image/png', '.jpg':'image/jpeg', '.woff2':'font/woff2' };
+      const mime = { '.html':'text/html; charset=utf-8', '.js':'text/javascript', '.css':'text/css', '.svg':'image/svg+xml', '.png':'image/png', '.jpg':'image/jpeg', '.webp':'image/webp', '.woff2':'font/woff2', '.json':'application/json', '.webmanifest':'application/manifest+json', '.txt':'text/plain; charset=utf-8' };
       res.writeHead(200, { 'Content-Type':mime[extname(file)] || 'application/octet-stream',
         'X-Content-Type-Options':'nosniff', 'Cache-Control':pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache' });
       res.end(req.method === 'HEAD' ? undefined : data);
@@ -132,6 +133,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const allowedOrigins=(process.env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
   if(process.env.NODE_ENV==='production' && !allowedOrigins.length) throw new Error('Set ALLOWED_ORIGINS in production');
   const relay=createRelay({port:Number(process.env.PORT)||8787,host:process.env.HOST||'0.0.0.0',allowedOrigins});
-  relay.listen().then(address=>console.log(`Kart relay listening on ${address.port} (/ws)`));
+  relay.listen().then(address=>console.log(`Lumen Kart relay listening on ${address.port} (/ws)`));
   for(const signal of ['SIGINT','SIGTERM']) process.on(signal,()=>relay.close().then(()=>process.exit(0)));
 }

@@ -1,6 +1,9 @@
 {
-  "name": "turbo-kart-rally",
+  "name": "lumen-kart",
   "version": "1.0.0",
+  "description": "Lumen Kart — un jeu de kart arcade en 3D avec Lumen, le petit renard à l'écharpe. Hors ligne, sans publicité, sans traçage.",
+  "author": "Omar Trabelsi",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "engines": {
@@ -12,21 +15,36 @@
     "preview": "vite preview --host 0.0.0.0",
     "server": "node server/index.js",
     "test": "node --test tests/*.test.js",
+    "test:browser": "playwright test",
+    "verify": "npm test && npm run build",
+    "assets": "node tools/generate-assets.mjs",
     "native:sync": "npm run build && cap sync",
-    "native:ios": "npm run native:sync && cap open ios",
-    "native:android": "npm run native:sync && cap open android",
-    "test:browser": "playwright test"
+    "ios": "npm run native:sync && cap open ios",
+    "android": "npm run native:sync && cap open android",
+    "native:ios": "npm run ios",
+    "native:android": "npm run android",
+    "ios:simulator": "npm run build && cap sync ios && xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath ios/DerivedData CODE_SIGNING_ALLOWED=NO build",
+    "android:apk": "npm run build && cap sync android && cd android && ./gradlew assembleDebug",
+    "android:bundle": "npm run build && cap sync android && cd android && ./gradlew bundleRelease",
+    "store:check": "node tools/validate-store.mjs",
+    "store:screenshots": "node tools/capture-store-screenshots.mjs"
   },
   "dependencies": {
     "@capacitor/android": "8.5.2",
+    "@capacitor/app": "8.1.2",
     "@capacitor/core": "8.5.2",
+    "@capacitor/haptics": "8.0.2",
     "@capacitor/ios": "8.5.2",
+    "@capacitor/preferences": "8.0.1",
+    "@capacitor/splash-screen": "8.0.2",
+    "@capacitor/status-bar": "8.0.4",
     "three": "0.170.0",
     "ws": "8.21.3"
   },
   "devDependencies": {
     "@capacitor/cli": "8.5.2",
     "@playwright/test": "^1.63.0",
+    "sharp": "0.34.5",
     "vite": "8.3.1"
   }
 }

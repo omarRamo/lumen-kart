@@ -49,20 +49,68 @@ const ORBIT_RADIUS = 2.1;
 const ROCKET_TIME = 5.5;
 const GHOST_TIME = 6;
 
-// Weighted distribution by place (1..8). Columns follow ITEM_ORDER.
-const ITEM_ORDER = ['coin', 'banana', 'triple_banana', 'green_shell', 'triple_green', 'red_shell', 'mushroom', 'triple_mushroom',
+// Weighted distribution by place (1..8). Columns follow ITEM_ORDER. Internal ids are kept (network/tests);
+// Lumen names: coin=Note, banana=Ronce, green_shell=Graine, red_shell=Luciole, mushroom=Comète, bomb=Fleur solaire,
+// ghost=Voile de nuit, star=Aurore, bullet=Plume d'envol, lightning=Éclipse, blue_shell=Étoile filante, horn=Résonance.
+// Tuned for short (2-3 min) mobile races: the leader gets defensive items only (incl. Résonance to answer a
+// shooting star), the middle gets fireflies and comets, the back gets real catch-up (triple comets, aurora, feather).
+export const ITEM_ORDER = ['coin', 'banana', 'triple_banana', 'green_shell', 'triple_green', 'red_shell', 'mushroom', 'triple_mushroom',
   'bomb', 'ghost', 'star', 'bullet', 'lightning', 'blue_shell', 'horn'];
-const WEIGHTS = [
+export const ITEM_WEIGHTS = [
   //       coin ban 3ban grn 3grn red mush 3msh bomb ghst star bull ltng blue horn
-  /*1*/ [22, 26, 10, 20, 6, 0, 4, 0, 0, 2, 0, 0, 0, 0, 10],
-  /*2*/ [8, 14, 8, 14, 10, 18, 10, 2, 6, 4, 1, 0, 0, 2, 3],
-  /*3*/ [4, 8, 6, 10, 10, 22, 14, 6, 8, 4, 3, 0, 0, 3, 2],
-  /*4*/ [2, 4, 4, 6, 8, 24, 16, 12, 8, 4, 5, 1, 1, 3, 2],
-  /*5*/ [0, 2, 2, 4, 6, 22, 16, 18, 6, 3, 8, 5, 2, 3, 1],
-  /*6*/ [0, 0, 0, 2, 4, 18, 14, 24, 4, 2, 12, 10, 4, 4, 1],
-  /*7*/ [0, 0, 0, 0, 2, 12, 10, 26, 2, 2, 16, 16, 6, 3, 0],
-  /*8*/ [0, 0, 0, 0, 0, 8, 8, 26, 0, 0, 18, 24, 10, 3, 0],
+  /*1*/ [24, 25, 7, 20, 5, 0, 5, 0, 0, 2, 0, 0, 0, 0, 12],
+  /*2*/ [10, 14, 6, 16, 8, 18, 12, 2, 5, 3, 1, 0, 0, 1, 4],
+  /*3*/ [5, 8, 5, 12, 10, 22, 16, 5, 7, 3, 3, 0, 0, 2, 2],
+  /*4*/ [2, 4, 3, 7, 9, 24, 18, 11, 7, 3, 5, 1, 1, 3, 2],
+  /*5*/ [0, 2, 1, 4, 6, 22, 18, 18, 6, 3, 8, 5, 2, 3, 2],
+  /*6*/ [0, 0, 0, 2, 4, 18, 16, 24, 4, 2, 12, 10, 4, 3, 1],
+  /*7*/ [0, 0, 0, 0, 2, 12, 12, 28, 2, 2, 16, 16, 6, 3, 1],
+  /*8*/ [0, 0, 0, 0, 0, 8, 10, 28, 0, 0, 20, 23, 8, 3, 0],
 ];
+const WEIGHTS = ITEM_WEIGHTS;
+// Per class (difficulty key) multipliers: at 50cc fewer hard punishments for the leader (shooting star, eclipse,
+// fireflies, sunflower bursts) and the freed odds go to comets, i.e. catch-up without bullying 1st place.
+export const CLASS_ITEM_MODS = {
+  easy: { blue_shell: 0.25, lightning: 0.35, red_shell: 0.7, bomb: 0.6, mushroom: 1.25, triple_mushroom: 1.2, star: 1.1 },
+  normal: { blue_shell: 0.7, lightning: 0.8 },
+  hard: {},
+  extreme: { red_shell: 1.1, blue_shell: 1.1 },
+};
+
+function oddsRow(place, racers) {
+  const n = Math.max(1, racers | 0);
+  let p = Number.isFinite(place) ? place : Math.ceil(n / 2);
+  p = Math.min(Math.max(p, 1), n);
+  return n <= 1 ? 3 : Math.round(((p - 1) / (n - 1)) * 7);
+}
+
+/** Raw weight of `item` for a racer in `place` of `racers` at class `difficulty` (no situational bans). */
+function itemWeight(i, row, difficulty) {
+  const mods = CLASS_ITEM_MODS[difficulty] || CLASS_ITEM_MODS.normal;
+  const id = ITEM_ORDER[i];
+  return WEIGHTS[row][i] * (mods[id] ?? 1);
+}
+
+/**
+ * Probability of every item for a place, e.g. itemOdds(1, 8, 'easy') -> { coin: 0.27, banana: 0.28, ... }.
+ * Situational bans used by the roulette (only one shooting star in play, no blue for 1st, no feather for top 2)
+ * are applied here too, except the "already in play" ones. Sums to 1.
+ */
+export function itemOdds(place, racers = 8, difficulty = 'normal') {
+  const row = oddsRow(place, racers);
+  const p = Math.min(Math.max(Number.isFinite(place) ? place : 4, 1), Math.max(1, racers | 0));
+  const out = {};
+  let total = 0;
+  for (let i = 0; i < ITEM_ORDER.length; i++) {
+    const id = ITEM_ORDER[i];
+    let w = itemWeight(i, row, difficulty);
+    if ((id === 'blue_shell' && p === 1) || (id === 'bullet' && p <= 2)) w = 0;
+    out[id] = w; total += w;
+  }
+  for (const id of ITEM_ORDER) out[id] = total > 0 ? out[id] / total : 0;
+  return out;
+}
+
 const TRIPLES = { triple_mushroom: 'mushroom', triple_banana: 'banana', triple_green: 'green_shell' };
 const DRAGGABLE = new Set(['banana', 'green_shell', 'red_shell']);
 const ROULETTE_CYCLE = ITEMS && ITEMS.length ? ITEMS : ITEM_ORDER;
@@ -95,31 +143,33 @@ function getFallbackAssets() {
   c.width = c.height = 128;
   const g = c.getContext('2d');
   const grad = g.createLinearGradient(0, 0, 128, 128);
-  grad.addColorStop(0, '#ff5ca8'); grad.addColorStop(0.33, '#ffd84a');
-  grad.addColorStop(0.66, '#4ae3ff'); grad.addColorStop(1, '#9b6bff');
+  // Light prism: LUMEN aura colours (bloom, breeze, comet, echo)
+  grad.addColorStop(0, '#ffc193'); grad.addColorStop(0.33, '#fff4c5');
+  grad.addColorStop(0.66, '#b5f3d0'); grad.addColorStop(1, '#dbb2f6');
   g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
   g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(8, 8, 112, 112);
   g.strokeStyle = '#ffffff'; g.lineWidth = 8; g.strokeRect(4, 4, 120, 120);
   g.fillStyle = '#ffffff'; g.font = 'bold 92px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.lineWidth = 6; g.strokeStyle = '#6a2fb8'; g.strokeText('?', 64, 70); g.fillText('?', 64, 70);
+  g.lineWidth = 6; g.strokeStyle = '#387d76'; g.strokeText('?', 64, 70); g.fillText('?', 64, 70);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   fallbackCache = {
     tex,
     boxGeo: new THREE.BoxGeometry(1.5, 1.5, 1.5),
-    boxMat: new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: 0.85, emissive: 0x442266, emissiveIntensity: 0.4, roughness: 0.2 }),
+    boxMat: new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: 0.85, emissive: 0x6b5a8a, emissiveIntensity: 0.35, roughness: 0.2 }),
     shellGeo: new THREE.SphereGeometry(0.55, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2),
     rimGeo: new THREE.TorusGeometry(0.55, 0.14, 8, 20),
     rimMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 }),
-    green: new THREE.MeshStandardMaterial({ color: 0x2ecc40, roughness: 0.35 }),
-    red: new THREE.MeshStandardMaterial({ color: 0xe8262a, roughness: 0.35 }),
-    blue: new THREE.MeshStandardMaterial({ color: 0x2f6bff, roughness: 0.3, emissive: 0x0a1a66, emissiveIntensity: 0.6 }),
+    // seed / firefly / shooting star (theme.js ITEM_INFO colours)
+    green: new THREE.MeshStandardMaterial({ color: 0x7ed37a, roughness: 0.35 }),
+    red: new THREE.MeshStandardMaterial({ color: 0xffb36b, roughness: 0.35, emissive: 0xffb36b, emissiveIntensity: 0.5 }),
+    blue: new THREE.MeshStandardMaterial({ color: 0x8fd3ff, roughness: 0.3, emissive: 0x8fd3ff, emissiveIntensity: 0.6 }),
     spikeGeo: new THREE.ConeGeometry(0.14, 0.4, 8),
     wingGeo: new THREE.BoxGeometry(0.9, 0.05, 0.35),
     wingMat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 }),
     bananaGeo: new THREE.TorusGeometry(0.4, 0.14, 8, 16, Math.PI * 1.1),
-    bananaMat: new THREE.MeshStandardMaterial({ color: 0xffe135, roughness: 0.5 }),
-    tipMat: new THREE.MeshStandardMaterial({ color: 0x5a3a12, roughness: 0.8 }),
+    bananaMat: new THREE.MeshStandardMaterial({ color: 0x7a9a4a, roughness: 0.6 }), // bramble
+    tipMat: new THREE.MeshStandardMaterial({ color: 0xe98c73, roughness: 0.8 }),
     tipGeo: new THREE.SphereGeometry(0.08, 6, 6),
   };
   return fallbackCache;
@@ -197,11 +247,99 @@ export function buildItemVisual(type) {
       else model.position.set(model.position.x - _v2.x, model.position.y - _box.min.y, model.position.z - _v2.z);
     }
   } catch (_) { /* ignore */ }
-  if (isFallback) holder.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  // Items never cast/receive shadows (mobile budget: the shadow pass would re-draw every prism and shell).
+  holder.traverse((o) => { if (o.isMesh || o.isSprite) { o.castShadow = false; o.receiveShadow = false; } });
   holder.userData.fallback = isFallback;
   holder.userData.type = type;
   holder.userData.inner = inner;
   return holder;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Light-prism rows: every box shares one InstancedMesh per model part (+ one Points batch for sprite halos),
+// so N boxes cost ~5 draw calls instead of 5 × N. Each box keeps a light `holder` Object3D (not in the scene)
+// whose position / rotation / scale / visible drive its instances (multiplayer guests toggle holder.visible).
+// ---------------------------------------------------------------------------------------------
+const _bm = new THREE.Matrix4();
+const _zeroM = new THREE.Matrix4().makeScale(0, 0, 0);
+const _hv = new THREE.Vector3();
+
+class PrismBatch {
+  constructor(boxes, group) {
+    this.boxes = boxes;
+    this.parts = [];
+    this.halos = [];
+    this.owned = [];
+    this.template = null;
+    const n = boxes.length;
+    if (!n) return;
+    const tpl = buildItemVisual('item_box');
+    this.template = tpl;
+    tpl.position.set(0, 0, 0); tpl.rotation.set(0, 0, 0); tpl.scale.set(1, 1, 1);
+    tpl.updateMatrixWorld(true);
+    tpl.traverse((o) => {
+      if (o.isMesh && o.geometry && o.material) {
+        const im = new THREE.InstancedMesh(o.geometry, o.material, n);
+        im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        im.frustumCulled = false; im.castShadow = false; im.receiveShadow = false;
+        im.renderOrder = o.renderOrder;
+        im.name = 'prism:' + (o.name || this.parts.length);
+        this.parts.push({ mesh: im, local: o.matrixWorld.clone() });
+        group.add(im);
+      } else if (o.isSprite && o.material) {
+        // sprites cannot be instanced: one attenuated Points cloud carries every halo
+        const sm = o.material;
+        o.getWorldScale(_hv);
+        const pos = new Float32Array(n * 3);
+        const geo = new THREE.BufferGeometry();
+        const attr = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage);
+        geo.setAttribute('position', attr);
+        geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+        const mat = new THREE.PointsMaterial({
+          map: sm.map || null, color: sm.color ? sm.color.clone() : 0xffffff, size: Math.max(_hv.x, _hv.y), sizeAttenuation: true,
+          transparent: true, depthWrite: false, opacity: sm.opacity ?? 1, blending: sm.blending ?? THREE.NormalBlending, toneMapped: sm.toneMapped,
+        });
+        const pts = new THREE.Points(geo, mat);
+        pts.frustumCulled = false; pts.renderOrder = o.renderOrder; pts.name = 'prism:halos';
+        o.getWorldPosition(_hv);
+        this.halos.push({ points: pts, attr, local: _hv.clone(), baseOpacity: mat.opacity });
+        this.owned.push(geo, mat);
+        group.add(pts);
+      }
+    });
+    // Guests (network) never run ItemSystem.update: keep instances in sync at render time too.
+    const first = this.parts[0]?.mesh || this.halos[0]?.points;
+    if (first) first.onBeforeRender = () => this.sync();
+    this.sync();
+  }
+
+  sync() {
+    const boxes = this.boxes;
+    for (let i = 0; i < boxes.length; i++) {
+      const h = boxes[i].holder;
+      const on = h.visible && h.scale.x > 0.002;
+      if (on) { h.updateMatrix(); }
+      for (const p of this.parts) {
+        if (on) p.mesh.setMatrixAt(i, _bm.multiplyMatrices(h.matrix, p.local));
+        else p.mesh.setMatrixAt(i, _zeroM);
+      }
+      for (const hl of this.halos) {
+        if (on) _hv.copy(hl.local).applyMatrix4(h.matrix); else _hv.set(0, -1e5, 0);
+        hl.attr.setXYZ(i, _hv.x, _hv.y, _hv.z);
+      }
+    }
+    for (const p of this.parts) p.mesh.instanceMatrix.needsUpdate = true;
+    for (const hl of this.halos) hl.attr.needsUpdate = true;
+  }
+
+  pulse(t) { for (const hl of this.halos) hl.points.material.opacity = hl.baseOpacity * (0.85 + Math.sin(t * 3) * 0.15); }
+
+  dispose() {
+    for (const p of this.parts) { p.mesh.parent?.remove(p.mesh); p.mesh.dispose?.(); }
+    for (const hl of this.halos) hl.points.parent?.remove(hl.points);
+    for (const o of this.owned) o.dispose?.();
+    this.parts.length = 0; this.halos.length = 0; this.owned.length = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -236,11 +374,16 @@ export class ItemSystem {
         const info = track.getSurfaceInfo?.(base);
         if (info && Number.isFinite(info.height) && base.y < info.height + 1.1) base.y = info.height + 1.3;
       } catch (_) { /* ignore */ }
-      const holder = buildItemVisual('item_box');
+      const holder = new THREE.Object3D(); // transform proxy driving the instanced prism parts
       holder.position.copy(base);
-      this.group.add(holder);
+      holder.userData.type = 'item_box';
       this.boxes.push({ base, holder, active: true, timer: 0, scaleT: 1, phase: i * 0.7 });
     }
+    this.prisms = null;
+    try { this.prisms = new PrismBatch(this.boxes, this.group); } catch (err) { console.error('[items] prism batch', err); }
+    // Effects (trails: firefly glow, starry shooting-star trail, seed dust, petals) read our live entities.
+    this._unsubs = [bus.on('fx:created', (d) => { try { d?.effects?.attachItems?.(this); } catch (_) { /* ignore */ } })];
+    bus.emit('items:created', { system: this });
   }
 
   // ------------------------------------------------------------------ public API
@@ -280,6 +423,9 @@ export class ItemSystem {
   }
 
   dispose() {
+    for (const u of this._unsubs || []) { try { u(); } catch (_) { /* ignore */ } }
+    this._unsubs = [];
+    bus.emit('items:disposed', { system: this });
     for (const e of this.entities) this._release(e.holder);
     for (const hv of this.held.values()) for (const h of hv.holders) this._release(h);
     this.held.clear();
@@ -296,7 +442,9 @@ export class ItemSystem {
       });
     };
     // models.js caches/shares geometry & materials between instances, so only dispose our own fallbacks
-    for (const b of this.boxes) if (b.holder.userData.fallback) disposeOnce(b.holder);
+    if (this.prisms?.template?.userData.fallback) disposeOnce(this.prisms.template);
+    this.prisms?.dispose();
+    this.prisms = null;
     for (const list of this.pools.values()) for (const h of list) if (h.userData.fallback) disposeOnce(h);
     this.boxes.length = 0;
     this.pools.clear();
@@ -310,6 +458,7 @@ export class ItemSystem {
   // ------------------------------------------------------------------ boxes
   _updateBoxes(dt) {
     const t = this.time;
+    if (this.prisms) this.prisms.pulse(t);
     for (const b of this.boxes) {
       const h = b.holder;
       if (!b.active) {
@@ -352,27 +501,37 @@ export class ItemSystem {
     }
   }
 
-  _rollItem(kart) {
+  /** Race class (difficulty key) inferred from the karts (main.js builds every kart with the class AI level). */
+  get difficulty() {
+    if (this._difficulty) return this._difficulty;
+    const d = this.karts.find((k) => k && typeof k.difficulty === 'string')?.difficulty;
+    return d === 'medium' ? 'normal' : (d || 'normal');
+  }
+  set difficulty(v) { this._difficulty = v; }
+
+  _rollItem(kart, rng = Math.random) {
     const n = Math.max(1, this.karts.length);
     let place = finite(kart.place, Math.ceil(n / 2));
     place = Math.min(Math.max(place, 1), n);
     // map place onto the 8-row table
-    const row = n <= 1 ? 3 : Math.round(((place - 1) / (n - 1)) * 7);
-    const weights = WEIGHTS[Math.min(7, Math.max(0, row))];
+    const row = Math.min(7, Math.max(0, oddsRow(place, n)));
+    const difficulty = this.difficulty;
     const blueActive = this.entities.some((e) => e.type === 'blue_shell' && !e.dead)
       || this.karts.some((k) => k && k.item === 'blue_shell');
     const lightningHeld = this.karts.some((k) => k && k.item === 'lightning');
     const banned = (it) => (it === 'blue_shell' && (blueActive || place === 1)) || (it === 'lightning' && lightningHeld)
       || (it === 'bullet' && place <= 2);
     let total = 0;
-    for (let i = 0; i < ITEM_ORDER.length; i++) if (!banned(ITEM_ORDER[i])) total += weights[i];
-    let r = Math.random() * total;
+    for (let i = 0; i < ITEM_ORDER.length; i++) if (!banned(ITEM_ORDER[i])) total += itemWeight(i, row, difficulty);
+    let r = rng() * total;
     for (let i = 0; i < ITEM_ORDER.length; i++) {
       if (banned(ITEM_ORDER[i])) continue;
-      r -= weights[i];
+      const w = itemWeight(i, row, difficulty);
+      if (w <= 0) continue;
+      r -= w;
       if (r <= 0) return ITEM_ORDER[i];
     }
-    return 'banana';
+    return place === 1 ? 'banana' : 'mushroom';
   }
 
   _updateRoulettes(dt) {
@@ -450,7 +609,7 @@ export class ItemSystem {
     let steal = null;
     try {
       switch (base) {
-        case 'mushroom': kart.applyBoost?.(PHYSICS.mushroomBoostTime, 1); break;
+        case 'mushroom': kart.applyBoost?.(PHYSICS.mushroomBoostTime, 1, 'mushroom'); break;
         case 'banana': this._spawnBanana(kart); break;
         case 'green_shell': this._spawnShell(kart, 'green_shell'); break;
         case 'red_shell': this._spawnShell(kart, 'red_shell'); break;
@@ -537,7 +696,7 @@ export class ItemSystem {
       }
       const g = this._groundHeight(e.pos, e);
       if (e.pos.y <= g && e.vel.y < 0) {
-        if (e.pit) { this._kill(e, false); bus.emit('item:splash', { position: e.pos.clone() }); return; }
+        if (e.pit) { this._kill(e, false); this._splash(e); return; }
         e.pos.y = g; e.flying = false; e.vel.set(0, 0, 0);
       }
     }
@@ -838,7 +997,7 @@ export class ItemSystem {
       }
       const g = this._groundHeight(e.pos, e);
       if (e.pos.y <= g && e.vel.y < 0) {
-        if (e.pit) { this._kill(e, false); bus.emit('item:splash', { position: e.pos.clone() }); return; }
+        if (e.pit) { this._kill(e, false); this._splash(e); return; }
         e.pos.y = g; e.flying = false; e.vel.set(0, 0, 0);
       }
       e.holder.rotation.x += dt * 9;
@@ -849,6 +1008,12 @@ export class ItemSystem {
       else e.holder.scale.setScalar(1);
     }
     e.holder.position.copy(e.pos);
+  }
+
+  /** Item lost in a pit: water splash or a little puff of stars over the void. */
+  _splash(e) {
+    const pitKind = this.track?.pitKind === 'void' || this.track?.theme === 'night' ? 'void' : 'water';
+    bus.emit('item:splash', { position: e.pos.clone(), pitKind, void: pitKind === 'void' });
   }
 
   _wall(pos, r) {
@@ -890,7 +1055,7 @@ export class ItemSystem {
       }
     }
     const g = this._groundHeight(e.pos, e) + SHELL_HOVER;
-    if (e.pit) { this._kill(e, false); bus.emit('item:splash', { position: e.pos.clone() }); return; }
+    if (e.pit) { this._kill(e, false); this._splash(e); return; }
     // follow the ground but allow short falls off ramps
     if (e.pos.y > g + 0.05) { e.vel.y -= PHYSICS.gravity * dt; e.pos.y += e.vel.y * dt; if (e.pos.y < g) { e.pos.y = g; e.vel.y = 0; } }
     else { e.pos.y = g; e.vel.y = 0; }
@@ -1014,6 +1179,7 @@ export class ItemSystem {
     if (kart.applyHit?.(kind) === false) return false;
     const st = this.kartState.get(kart); if (st) { st.dragging = false; st.dragItem = null; }
     bus.emit('item:hit', { kart, item, by });
+    if (by && by !== kart && by.isPlayer) bus.emit('haptic', { kart: by, style: 'success', intensity: 0.6, source: 'itemHit' });
     return true;
   }
 

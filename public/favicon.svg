@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Lumen Kart</title>
+  <!-- Lumen Kart app icon. Original artwork (c) 2026 Omar Trabelsi. Lumen palette, no text.
+       Layers: #background (full bleed) and #foreground (fox + wheel, kept inside a 400 px radius
+       for Android adaptive-icon masks). tools/generate-assets.mjs renders each layer separately. -->
+  <defs><clipPath id="corner"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <radialGradient id="sky" cx="0.5" cy="0.42" r="0.75">
+      <stop offset="0" stop-color="#3b8a80"/>
+      <stop offset="0.55" stop-color="#1f4f4c"/>
+      <stop offset="1" stop-color="#123230"/>
+    </radialGradient>
+    <radialGradient id="dawn" cx="0.56" cy="0.56" r="0.5">
+      <stop offset="0" stop-color="#ffc193" stop-opacity="0.55"/>
+      <stop offset="0.6" stop-color="#ffc193" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffc193" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="streakGold" x1="0" x2="1">
+      <stop offset="0" stop-color="#edc371" stop-opacity="0"/>
+      <stop offset="1" stop-color="#edc371" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="streakMint" x1="0" x2="1">
+      <stop offset="0" stop-color="#b5f3d0" stop-opacity="0"/>
+      <stop offset="1" stop-color="#b5f3d0" stop-opacity="0.85"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe2ac"/>
+      <stop offset="1" stop-color="#edc371"/>
+    </linearGradient>
+    <radialGradient id="hub" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#d6f7e4"/>
+      <stop offset="1" stop-color="#8fcaa8"/>
+    </radialGradient>
+    <linearGradient id="scarf" x1="1" y1="0" x2="0" y2="0.4">
+      <stop offset="0" stop-color="#f09a80"/>
+      <stop offset="1" stop-color="#e07a62"/>
+    </linearGradient>
+  </defs>
+
+  <g clip-path="url(#corner)"><g id="background">
+    <rect width="1024" height="1024" fill="url(#sky)"/>
+    <rect width="1024" height="1024" fill="url(#dawn)"/>
+    <g fill="#fff7dc" opacity="0.75">
+      <path d="M150 144 Q154.68 165.32 176 170 Q154.68 174.68 150 196 Q145.32 174.68 124 170 Q145.32 165.32 150 144Z"/>
+      <path d="M880 132 Q883.24 146.76 898 150 Q883.24 153.24 880 168 Q876.76 153.24 862 150 Q876.76 146.76 880 132Z"/>
+      <path d="M905 858 Q908.96 876.04 927 880 Q908.96 883.96 905 902 Q901.04 883.96 883 880 Q901.04 876.04 905 858Z"/>
+      <path d="M110 846 Q112.52 857.48 124 860 Q112.52 862.52 110 874 Q107.48 862.52 96 860 Q107.48 857.48 110 846Z"/>
+      <circle cx="260" cy="95" r="6"/><circle cx="770" cy="70" r="5"/><circle cx="960" cy="420" r="6"/>
+    </g>
+    <g stroke-linecap="round" fill="none">
+      <path d="M-20 300 H330" stroke="url(#streakMint)" stroke-width="22"/>
+      <path d="M-20 420 H250" stroke="url(#streakGold)" stroke-width="16"/>
+      <path d="M-20 700 H230" stroke="url(#streakGold)" stroke-width="20"/>
+      <path d="M-20 810 H300" stroke="url(#streakMint)" stroke-width="14"/>
+    </g>
+  </g>
+
+  <g id="foreground">
+    <!-- Kart wheel: tread, tyre, golden rim and spokes. Its hub hides behind Lumen. -->
+    <circle cx="548" cy="560" r="350" fill="#163536"/>
+    <circle cx="548" cy="560" r="346" fill="none" stroke="#25575b" stroke-width="6"/>
+    <g fill="none" stroke="#2f6667" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M534 222 L548 240 L562 222" transform="rotate(0.00 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(12.86 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(25.71 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(38.57 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(51.43 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(64.29 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(77.14 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(90.00 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(102.86 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(115.71 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(128.57 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(141.43 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(154.29 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(167.14 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(180.00 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(192.86 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(205.71 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(218.57 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(231.43 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(244.29 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(257.14 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(270.00 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(282.86 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(295.71 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(308.57 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(321.43 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(334.29 548 560)"/><path d="M534 222 L548 240 L562 222" transform="rotate(347.14 548 560)"/></g>
+    <circle cx="548" cy="560" r="280" fill="url(#rim)"/>
+    <circle cx="548" cy="560" r="254" fill="url(#hub)"/>
+    <g stroke="#fff7dc" stroke-width="20" stroke-linecap="round" opacity="0.9"><line x1="548" y1="560" x2="548.0" y2="310.0"/><line x1="548" y1="560" x2="694.9" y2="357.7"/><line x1="548" y1="560" x2="785.8" y2="482.7"/><line x1="548" y1="560" x2="785.8" y2="637.3"/><line x1="548" y1="560" x2="694.9" y2="762.3"/><line x1="548" y1="560" x2="548.0" y2="810.0"/><line x1="548" y1="560" x2="401.1" y2="762.3"/><line x1="548" y1="560" x2="310.2" y2="637.3"/><line x1="548" y1="560" x2="310.2" y2="482.7"/><line x1="548" y1="560" x2="401.1" y2="357.7"/></g>
+    <circle cx="548" cy="560" r="254" fill="none" stroke="#e5b25e" stroke-width="7"/>
+
+    <!-- Speed arcs on the wheel's trailing edge. -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M158 440 A390 390 0 0 0 188 730" stroke="#b5f3d0" stroke-width="18" opacity="0.8"/>
+      <path d="M116 520 A432 432 0 0 0 136 680" stroke="#edc371" stroke-width="12" opacity="0.75"/>
+    </g>
+
+    <!-- Lumen: the teal fox with leaf ears, cream mask, golden star and coral scarf.
+         Drawn in a 64-unit local space, scaled to the icon. -->
+    <g transform="translate(205 185) scale(8.6)">
+      <!-- scarf tails streaming behind (speed) -->
+      <path d="M17 52 C9 53 4 58 -3 63 C-9 67 -15 67 -21 66 C-16 70 -9 72 -2 70 C5 68 10 62 18 58Z" fill="url(#scarf)"/>
+      <path d="M17 55 C11 59 6 66 -1 72 C-6 76 -12 77 -17 76 C-12 80 -4 80 2 77 C9 73 13 66 19 60Z" fill="#d9705a"/>
+      <path d="M15 54.5 C8 56.5 2 61.5 -4 65.5" fill="none" stroke="#ffe2ac" stroke-width="0.7" stroke-dasharray="1.3 1.3" stroke-linecap="round"/>
+      <!-- leaf ears -->
+      <path d="M17 36C1 29 6 9 7 2c16 3 22 15 25 22C39 10 47 4 57 2c5 22-4 29-11 35Z" fill="#306f70"/>
+      <path d="M18 28 12 9 27 30Z M46 30 53 9 37 30Z" fill="#a6dfc6"/>
+      <path d="M12.6 10.5 L19.5 26 M52.4 10.5 L45.8 27" stroke="#306f70" stroke-width="0.8" stroke-linecap="round" opacity="0.55"/>
+      <!-- body / chest -->
+      <path d="M17 45h30l3 20q-18 13-36 0Z" fill="#387d76"/>
+      <ellipse cx="32" cy="63" rx="9" ry="6.5" fill="#99d1b7"/>
+      <path d="M32 57.6l1.3 3 3.2.3-2.4 2.1.7 3.1-2.8-1.6-2.8 1.6.7-3.1-2.4-2.1 3.2-.3Z" fill="#f3d096"/>
+      <circle cx="32" cy="61.6" r="1" fill="#fff0ce"/>
+      <!-- face mask -->
+      <path d="M7 35c2-17 45-19 51 0 9 25-55 30-51 0Z" fill="#fff7dc"/>
+      <!-- forehead star -->
+      <path d="M32.5 22.3l1.5 3.4 3.6 1.5-3.6 1.5-1.5 3.4-1.5-3.4-3.6-1.5 3.6-1.5Z" fill="#edc371"/>
+      <!-- eyes -->
+      <ellipse cx="23" cy="37.5" rx="3.3" ry="5.1" fill="#25575b"/>
+      <ellipse cx="42" cy="37.5" rx="3.3" ry="5.1" fill="#25575b"/>
+      <circle cx="24.1" cy="35.2" r="1.35" fill="#ffffff"/>
+      <circle cx="43.1" cy="35.2" r="1.35" fill="#ffffff"/>
+      <circle cx="22.2" cy="39.6" r="0.6" fill="#ffffff" opacity="0.8"/>
+      <circle cx="41.2" cy="39.6" r="0.6" fill="#ffffff" opacity="0.8"/>
+      <!-- cheeks, nose, smile -->
+      <ellipse cx="16.8" cy="44" rx="3.2" ry="1.9" fill="#edba9c"/>
+      <ellipse cx="48.2" cy="44" rx="3.2" ry="1.9" fill="#edba9c"/>
+      <ellipse cx="32.5" cy="42.3" rx="1.7" ry="1.15" fill="#25575b"/>
+      <path d="M29 45.2q3.5 3.2 7 0" fill="none" stroke="#ed9b77" stroke-width="1.5" stroke-linecap="round"/>
+      <!-- scarf band around the neck, with golden stitching -->
+      <path d="M15.5 50.5 Q32 57 49 49.5 L48.2 56.6 Q32 63.5 16.6 57.6Z" fill="url(#scarf)"/>
+      <path d="M17.3 54.4 Q32 60 47.3 53.3" fill="none" stroke="#ffe2ac" stroke-width="0.75" stroke-dasharray="1.3 1.3" stroke-linecap="round"/>
+    </g>
+  </g>
+</g></svg>

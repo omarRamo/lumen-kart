@@ -1,99 +1,139 @@
-// Kart attachments: the rescue drone that fishes fallen karts back onto the track and the rocket shell
-// a kart turns into when it fires the Bullet item. Geometry/materials are shared between instances.
+// Kart attachments, re-dressed for Lumen Kart:
+//  - createRescueDrone(): a friendly glowing lantern-bird that fishes fallen karts back onto the track
+//    with four threads of light (API unchanged: { root, animate(time, ropeLen) }).
+//  - createRocketShell(): the "Plume d'envol" (flight feather, internal id `bullet`) — a soft glowing
+//    glider cocoon with two big feather wings and a sparkle trail (API unchanged: { root, animate(time) }).
+// Static parts are merged into one vertex-coloured mesh with the shared Lumen shader (models.js), so
+// the bird is 6 draw calls and the glider 5. Templates are built once; animate() allocates nothing.
 import * as THREE from 'three';
+import { _fx } from './models.js';
 
-let shared = null;
-function assets() {
-  if (shared) return shared;
-  const std = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.1, ...extra });
-  shared = {
-    body: new THREE.SphereGeometry(0.9, 18, 12),
-    visor: new THREE.SphereGeometry(0.55, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2),
-    arm: new THREE.BoxGeometry(3.2, 0.14, 0.22),
-    rotor: new THREE.CylinderGeometry(0.62, 0.62, 0.04, 16),
-    hub: new THREE.CylinderGeometry(0.14, 0.14, 0.3, 8),
-    rope: new THREE.CylinderGeometry(0.03, 0.03, 1, 5).translate(0, -0.5, 0),
-    flag: new THREE.PlaneGeometry(1.1, 0.7).translate(0.55, 0, 0),
-    shell: new THREE.CylinderGeometry(1.25, 1.25, 3.0, 20, 1, true).rotateX(Math.PI / 2),
-    nose: new THREE.SphereGeometry(1.25, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(Math.PI / 2),
-    tail: new THREE.CylinderGeometry(1.25, 1.0, 0.6, 20).rotateX(Math.PI / 2),
-    fin: new THREE.BoxGeometry(0.12, 1.0, 1.0),
-    eye: new THREE.SphereGeometry(0.28, 12, 8),
-    pupil: new THREE.SphereGeometry(0.14, 10, 6),
-    flame: new THREE.ConeGeometry(0.8, 2.6, 12, 1, true).rotateX(-Math.PI / 2),
-    mats: {
-      drone: std(0xf6f6f6), stripe: std(0xff4d4d), visor: std(0x1e2a44, { roughness: 0.15, metalness: 0.6 }),
-      dark: std(0x2a2d35), rotor: new THREE.MeshBasicMaterial({ color: 0xcfd8dc, transparent: true, opacity: 0.45 }),
-      rope: std(0x333333), flag: new THREE.MeshStandardMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
-      bullet: std(0x22252c, { roughness: 0.3, metalness: 0.5 }), eyeW: std(0xffffff), eyeB: std(0x111111),
-      flame: new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff9a2a).multiplyScalar(2), transparent: true, opacity: 0.85, toneMapped: false, depthWrite: false }),
-    },
-  };
-  const c = document.createElement('canvas'); c.width = 64; c.height = 40;
-  const g = c.getContext('2d');
-  for (let x = 0; x < 8; x++) for (let y = 0; y < 5; y++) { g.fillStyle = (x + y) % 2 ? '#111' : '#fff'; g.fillRect(x * 8, y * 8, 8, 8); }
-  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.NearestFilter;
-  shared.mats.flag.map = tex;
-  return shared;
+const PI = Math.PI;
+const { Builder, instantiate, furMat, stdMat, glowMat, MAT, M, extrude, sparkleShape, leafShape, sphere, bigSphere, coneG, cylG, torusG, glowSprite, tailMat, currentQuality, withQuality } = _fx;
+
+function eyes(b, x, y, z, s, yaw = 0) {
+  for (const sx of [-1, 1]) {
+    b.add(sphere(1, 12, 8), stdMat(0x25575b, 0.25), M([x + sx * 0.17 * s, y, z], [0, sx * yaw, 0], [0.07 * s, 0.11 * s, 0.05 * s]));
+    b.add(sphere(1, 6, 4), MAT.shine, M([x + sx * 0.17 * s + 0.025 * s, y + 0.04 * s, z + 0.045 * s], null, [0.025 * s, 0.032 * s, 0.02 * s]));
+  }
+}
+
+let tpl = null;
+function templates() {
+  if (tpl) return tpl;
+  tpl = withQuality(currentQuality(), () => {
+    const cream = furMat(0xfff1c9, 0.22), mint = furMat(0xb5f3d0, 0.2), deep = furMat(0x67baa5, 0.15);
+    // lantern-bird body
+    const bird = new Builder();
+    bird.add(bigSphere(0.8, 22, 16), cream, M([0, 0, 0], null, [1, 0.85, 1.1]));
+    bird.add(bigSphere(0.5, 20, 14), cream, M([0, 0.52, 0.7]));
+    eyes(bird, 0, 0.6, 1.14, 1.2, 0.2);
+    for (const sx of [-1, 1]) bird.add(sphere(1, 8, 6), furMat(0xedba9c, 0.1), M([sx * 0.33, 0.45, 1.07], [0, sx * 0.5, 0], [0.07, 0.04, 0.02]));
+    bird.add(coneG(0.1, 0.24, 8), MAT.gold, M([0, 0.48, 1.22], [PI / 2, 0, 0]));
+    for (const [z, r] of [[0.6, -0.4], [0.75, 0.2]]) bird.add(extrude(leafShape(0.14, 1), 0.03, 0.015), mint, M([0, 0.98, z], [-0.3, PI / 2, r]));
+    for (const r of [-0.45, 0, 0.45]) bird.add(extrude(leafShape(0.3, 0.9), 0.04, 0.02), r === 0 ? deep : mint, M([0, 0.1, -0.8], [-PI / 2 - 0.4, 0, r]));
+    const wing = new Builder();
+    const wg = extrude(leafShape(0.72, 1.05), 0.05, 0.025);
+    wg.rotateZ(-PI / 2); // tip toward +X
+    wing.add(wg, mint, M([0, 0, 0], [PI / 2 - 0.55, 0, 0]));
+    const lantern = new Builder();
+    lantern.add(new THREE.OctahedronGeometry(0.26, 0), glowMat(0xffd98a, 0.9), M([0, -0.38, 0], null, [1, 1.45, 1]));
+    lantern.add(sphere(0.13, 10, 8), glowMat(0xfff6cc, 1.3), M([0, -0.38, 0]));
+    lantern.add(coneG(0.14, 0.12, 8), MAT.gold, M([0, -0.02, 0]));
+    const ropes = new Builder();
+    for (const [x, z] of [[0.5, 0.5], [-0.5, 0.5], [0.5, -0.5], [-0.5, -0.5]]) ropes.add(cylG(0.028, 0.028, 1, 5), glowMat(0xffe2ac, 1.2), M([x, -0.5, z]));
+    // flight-feather glider
+    const pod = new Builder();
+    pod.add(bigSphere(1.2, 24, 16), stdMat(0xd9f8d4, 0.45, 0, { emissive: 1, emissiveIntensity: 0.55 }), M([0, 0, 0], null, [1, 0.95, 1.35]));
+    pod.add(torusG(1.08, 0.12, 8, 28), stdMat(0xfff7dc, 0.5), M([0, 0, -0.35], null, [1, 0.95, 1]));
+    pod.add(extrude(sparkleShape(0.42, 0.28), 0.12, 0.05), MAT.gold, M([0, 0.35, 1.55]));
+    eyes(pod, 0, -0.05, 1.56, 2.2, 0.15);
+    const feather = new Builder();
+    const fg = extrude(leafShape(1.25, 0.62), 0.07, 0.035, 8);
+    fg.rotateZ(-PI / 2);
+    { const p = fg.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i); p.setY(i, p.getY(i) + Math.sin(x * 1.2) * 0.12); } fg.computeVertexNormals(); }
+    feather.add(fg, stdMat(0xeefcf0, 0.6, 0, { emissive: 1, emissiveIntensity: 0.55 }), M([0, 0, 0], [PI / 2 - 0.5, 0, 0]));
+    const sparkles = new Builder();
+    for (let i = 0; i < 4; i++) sparkles.add(extrude(sparkleShape(0.16 * (1 - i * 0.18), 0.24), 0.03, 0), glowMat(0xfff6d8, 1.2), M([Math.sin(i * 2.4) * 0.6, Math.cos(i * 1.7) * 0.45, -0.4 - i * 0.8], [0, 0, i]));
+    const trail = new THREE.ConeGeometry(0.95, 3.0, 14, 1, true).translate(0, 1.5, 0).rotateX(-PI / 2);
+    return { bird: bird.build(), wing: wing.build(), lantern: lantern.build(), ropes: ropes.build(), pod: pod.build(), feather: feather.build(), sparkles: sparkles.build(), trail };
+  });
+  return tpl;
 }
 
 export function createRescueDrone() {
-  const A = assets(), M = A.mats;
+  const T = templates();
   const root = new THREE.Group();
   root.name = 'rescueDrone';
-  const body = new THREE.Mesh(A.body, M.drone); body.scale.set(1, 0.7, 1.1); body.castShadow = true; root.add(body);
-  const stripe = new THREE.Mesh(A.hub, M.stripe); stripe.scale.set(6.6, 0.5, 6.6); root.add(stripe);
-  const visor = new THREE.Mesh(A.visor, M.visor); visor.position.set(0, 0.05, 0.62); visor.rotation.x = Math.PI / 2; root.add(visor);
-  const rotors = [];
-  for (const r of [0, Math.PI / 2]) {
-    const arm = new THREE.Mesh(A.arm, M.dark); arm.rotation.y = r + Math.PI / 4; arm.position.y = 0.35; root.add(arm);
+  const bird = instantiate(T.bird, null, true);
+  root.add(bird);
+  const wings = [];
+  for (const sx of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sx * 0.62, 0.25, 0.05);
+    const w = instantiate(T.wing);
+    w.scale.set(sx, 1, 1);
+    pivot.add(w);
+    bird.add(pivot);
+    wings.push({ pivot, sx });
   }
-  for (const [x, z] of [[1.15, 1.15], [-1.15, 1.15], [1.15, -1.15], [-1.15, -1.15]]) {
-    const hub = new THREE.Mesh(A.hub, M.dark); hub.position.set(x, 0.5, z); root.add(hub);
-    const rot = new THREE.Mesh(A.rotor, M.rotor); rot.position.set(x, 0.68, z); root.add(rot); rotors.push(rot);
-  }
-  const ropes = [];
-  for (const [x, z] of [[0.5, 0.5], [-0.5, 0.5], [0.5, -0.5], [-0.5, -0.5]]) {
-    const rope = new THREE.Mesh(A.rope, M.rope); rope.position.set(x, -0.5, z); root.add(rope); ropes.push(rope);
-  }
-  const flag = new THREE.Mesh(A.flag, M.flag); flag.position.set(-1.0, 0.2, -0.9); root.add(flag);
+  const lanternPivot = new THREE.Group();
+  lanternPivot.position.set(0, -0.62, 0.1);
+  lanternPivot.add(instantiate(T.lantern));
+  const halo = glowSprite(0xffd98a, 2.2, 0.7); halo.position.y = -0.38; lanternPivot.add(halo);
+  bird.add(lanternPivot);
+  const ropes = instantiate(T.ropes);
+  ropes.position.y = -0.5;
+  root.add(ropes);
   root.visible = false;
   return {
     root,
     animate(time, ropeLen) {
-      for (const r of rotors) r.rotation.y = time * 40;
-      for (const rp of ropes) { rp.visible = ropeLen > 0.05; rp.scale.y = Math.max(0.01, ropeLen); }
-      flag.rotation.y = Math.sin(time * 9) * 0.35;
-      root.rotation.z = Math.sin(time * 3) * 0.05;
+      const flap = Math.sin(time * 11);
+      for (const w of wings) w.pivot.rotation.z = w.sx * (0.15 + flap * 0.55);
+      bird.position.y = Math.sin(time * 11 + 0.8) * 0.08;
+      bird.rotation.x = Math.sin(time * 2.1) * 0.05;
+      lanternPivot.rotation.z = Math.sin(time * 3.2) * 0.18;
+      halo.material.opacity = 0.55 + Math.sin(time * 5) * 0.15;
+      ropes.visible = ropeLen > 0.05;
+      ropes.scale.y = Math.max(0.01, ropeLen);
+      root.rotation.z = Math.sin(time * 3) * 0.04;
     },
   };
 }
 
 export function createRocketShell() {
-  const A = assets(), M = A.mats;
+  const T = templates();
   const root = new THREE.Group();
   root.name = 'rocketShell';
-  const body = new THREE.Mesh(A.shell, M.bullet); body.position.y = 1.1; body.castShadow = true; root.add(body);
-  const nose = new THREE.Mesh(A.nose, M.bullet); nose.position.set(0, 1.1, 1.5); nose.castShadow = true; root.add(nose);
-  const tail = new THREE.Mesh(A.tail, M.dark); tail.position.set(0, 1.1, -1.75); root.add(tail);
-  for (let k = 0; k < 4; k++) {
-    const fin = new THREE.Mesh(A.fin, M.dark);
-    const a = k * Math.PI / 2 + Math.PI / 4;
-    fin.position.set(Math.cos(a) * 1.3, 1.1 + Math.sin(a) * 1.3, -1.5);
-    fin.rotation.z = a; root.add(fin);
+  const glider = instantiate(T.pod, null, true);
+  glider.position.y = 1.1;
+  root.add(glider);
+  const feathers = [];
+  for (const sx of [-1, 1]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sx * 0.95, 0.35, 0.1);
+    const f = instantiate(T.feather);
+    f.scale.set(sx, 1, 1);
+    pivot.add(f);
+    glider.add(pivot);
+    feathers.push({ pivot, sx });
   }
-  for (const s of [-1, 1]) {
-    const e = new THREE.Mesh(A.eye, M.eyeW); e.position.set(s * 0.55, 1.55, 2.2); e.scale.set(1, 1.3, 0.6); root.add(e);
-    const p = new THREE.Mesh(A.pupil, M.eyeB); p.position.set(s * 0.55, 1.58, 2.36); root.add(p);
-  }
-  const flame = new THREE.Mesh(A.flame, M.flame); flame.position.set(0, 1.1, -3.2); root.add(flame);
+  const tail = new THREE.Mesh(T.trail, tailMat(0xb5f3d0, 0.55)); tail.position.set(0, 1.1, -1.4); root.add(tail);
+  const sparkles = instantiate(T.sparkles);
+  sparkles.position.set(0, 1.1, -1.5);
+  root.add(sparkles);
   root.visible = false;
   return {
     root,
     animate(time) {
-      const f = 0.8 + Math.sin(time * 50) * 0.2;
-      flame.scale.set(f, f, 0.8 + Math.sin(time * 37) * 0.3);
-      body.rotation.z = time * 6;
+      for (const f of feathers) f.pivot.rotation.z = f.sx * (0.12 + Math.sin(time * 4) * 0.12);
+      glider.rotation.z = Math.sin(time * 1.7) * 0.08;
+      glider.position.y = 1.1 + Math.sin(time * 2.4) * 0.1;
+      const k = 0.85 + Math.sin(time * 30) * 0.12;
+      tail.scale.set(k, k, 0.9 + Math.sin(time * 23) * 0.15);
+      sparkles.rotation.z = time * 2.5;
+      sparkles.position.z = -1.5 - ((time * 1.6) % 1) * 0.8;
     },
   };
 }

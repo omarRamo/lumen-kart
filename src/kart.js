@@ -1,7 +1,7 @@
 // Arcade kart physics: heading + forward speed with lateral grip, hop-drift with 3-level mini-turbos,
 // boosts, jump ramps, walls, slopes, hits, star/shrink, start-line rocket boost and Lakitu-style respawn.
 import * as THREE from 'three';
-import { PHYSICS, DIFFICULTY, normalizeDifficulty } from './config.js';
+import { PHYSICS, DIFFICULTY, FEEL, ASSIST, normalizeDifficulty } from './config.js';
 import { bus } from './events.js';
 import { InputController } from './input.js';
 import { createRescueDrone, createRocketShell } from './kartfx.js';
@@ -20,13 +20,13 @@ const NORMAL_GRIP = 13;               // lateral velocity decay rate (1/s)
 const DRIFT_GRIP = 2.6;               // low grip while drifting => outward slide
 const AIR_GRIP = 0.4;
 const SPEED_KEEP_IN_TURN = 0.85;      // fraction of speed magnitude preserved when grip kills lateral slip
-const DRIFT_MIN_SPEED = 12;
+const DRIFT_MIN_SPEED = 10;
 const DRIFT_CANCEL_SPEED = 8;
 const DRIFT_TURN_BASE = 0.62;         // drift yaw = dir * (base + span * steer*dir) * turnRate
 const DRIFT_TURN_SPAN = 0.5;
 const DRIFT_TURN_MUL = 1.08;
 const DRIFT_BODY_YAW = 0.42;          // visual inward yaw while drifting
-const MINI_TURBO_STRENGTH = [0.72, 0.86, 1.0];
+const MINI_TURBO_STRENGTH = [0.7, 0.85, 1.0];
 const HOP_VELOCITY = 4.8;
 const HOP_GRAVITY = 40;
 const DRIFT_PENDING_WINDOW = 0.28;    // after hop landing, time to pick a direction while drift held
@@ -36,7 +36,8 @@ const STAR_SPEED_BONUS = 7;
 const OVERSPEED_DECEL = 16;
 const OFFROAD_OVERSPEED_DECEL = 48;
 const SLOPE_GRAVITY_FACTOR = 0.35;
-const WALL_RESTITUTION = 0.35;
+const WALL_RESTITUTION = 0.35;       // head-on bounce
+const WALL_RESTITUTION_GLANCE = 0.08; // shallow contact: slide along the wall instead of bouncing off
 const WALL_FRICTION = 0.12;
 const SHRINK_SCALE = 0.6;
 const SHRINK_SPEED_FACTOR = 0.74;
@@ -55,6 +56,47 @@ const SLIP_RANGE = 20;                // slipstream: max distance behind a kart
 const SLIP_CHARGE = 1.5;              // seconds in the draft before the boost fires
 
 const _n = new THREE.Vector3();
+const _aT = new THREE.Vector3();
+const wrap01 = (t) => ((t % 1) + 1) % 1;
+const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+// ---- Steering assist helpers -----------------------------------------------------------------
+// Racing-line lateral offsets sampled once per track (no per-frame allocation afterwards).
+const LINE_SAMPLES = 512;
+const _lineCache = new WeakMap();
+function racingLineTable(track) {
+  if (!track || typeof track !== 'object') return null;
+  let tab = _lineCache.get(track);
+  if (tab !== undefined) return tab;
+  tab = null;
+  try {
+    if (track.getRacingLine && track.getPointAt && track.getTangentAt) {
+      tab = new Float32Array(LINE_SAMPLES);
+      for (let i = 0; i < LINE_SAMPLES; i++) {
+        const t = i / LINE_SAMPLES;
+        const r = track.getRacingLine(t), c = track.getPointAt(t), tg = track.getTangentAt(t);
+        const v = (r.x - c.x) * -tg.z + (r.z - c.z) * tg.x;
+        tab[i] = fin(v) ? v : 0;
+      }
+    }
+  } catch { tab = null; }
+  _lineCache.set(track, tab);
+  return tab;
+}
+function lineLatAt(tab, t) {
+  if (!tab) return 0;
+  const s = wrap01(t) * LINE_SAMPLES;
+  const a = Math.floor(s) % LINE_SAMPLES, b = (a + 1) % LINE_SAMPLES, f = s - Math.floor(s);
+  return tab[a] + (tab[b] - tab[a]) * f;
+}
+function trackHeading(track, t) {
+  try {
+    if (track.headingAt) { const h = track.headingAt(t); if (fin(h)) return h; }
+    const tg = track.getTangentAt?.(t);
+    if (tg && fin(tg.x)) return Math.atan2(tg.x, tg.z);
+  } catch { /* ignore */ }
+  return null;
+}
 
 function neutralInput() {
   return { throttle: 0, brake: 0, steer: 0, drift: false, item: false, lookBack: false };
@@ -76,7 +118,7 @@ export class Kart {
       maxSpeed: PHYSICS.maxSpeed * tuning.speedFactor * statLerp(st.speed, 0.93, 1.07),
       accel: PHYSICS.accel * tuning.accelFactor * statLerp(st.accel, 0.8, 1.28),
       turnRate: BASE_TURN_RATE * tuning.handlingFactor * statLerp(st.handling, 0.88, 1.14),
-      driftCharge: statLerp(st.handling, 0.92, 1.1),
+      driftCharge: statLerp(st.handling, 0.92, 1.1) * (fin(tuning.driftChargeMul) ? tuning.driftChargeMul : 1),
       mass: statLerp(st.weight, 0.75, 1.4),
     };
 
@@ -99,6 +141,10 @@ export class Kart {
 
     this.input = neutralInput();
     this.maxSpeedScale = 1;       // multiplier used by AI rubber-banding / difficulty
+    // Steering assist ("aide à la direction"): the UI sets this from settings (default ON at 50cc).
+    // steering: bool, strength: 0..1 (0.6 = gentle, 1 = keeps the kart on the racing line hands-off).
+    this.assist = { steering: false, strength: ASSIST.defaultStrength };
+    this.assistNudge = 0;         // 0..1, how hard the assist is correcting right now (HUD hint)
     this.time = 0;
 
     // race fields (maintained by RaceManager)
@@ -182,7 +228,14 @@ export class Kart {
     this.hopVel = 0;
     this.hopping = false;
     this._driftPending = 0;
+    this._driftArmed = false;
     this._prevDrift = false;
+    this.hitStopTimer = 0;
+    this._steerRamp = 0;
+    this._assistPrevErr = 0;
+    this._assistGov = 1;
+    this._assistBrake = 0;
+    this.assistNudge = 0;
     this._padCooldown = 0;
     this._jumpCooldown = 0;
     this._wallCooldown = 0;
@@ -245,6 +298,20 @@ export class Kart {
     return t;
   }
 
+  /** Haptic hook for the UI (Capacitor Haptics / navigator.vibrate). Only the local player emits. */
+  _haptic(style, intensity, source) {
+    if (!this.isPlayer) return;
+    bus.emit('haptic', { kart: this, style, intensity: clamp(fin(intensity) ? intensity : 0.5, 0, 1), source });
+  }
+
+  /** Short per-kart freeze on impact (simulation time, deterministic). */
+  _hitStop(kind) {
+    const d = FEEL.hitStop?.[kind] ?? 0;
+    if (!(d > 0)) return;
+    this.hitStopTimer = Math.max(this.hitStopTimer, d);
+    bus.emit('kart:hitStop', { kart: this, kind, duration: d });
+  }
+
   // ---- public actions ------------------------------------------------------------------
   applyBoost(seconds, strength = 1, source = 'item') {
     if (!fin(seconds) || seconds <= 0) return;
@@ -257,6 +324,7 @@ export class Kart {
     this._boostKick = Math.max(this._boostKick, BOOST_KICK * strength);
     this._boostPitch = 0.09 * strength;
     bus.emit('kart:boost', { kart: this, source, seconds, strength });
+    if (source !== 'miniTurbo' && source !== 'coin') this._haptic(strength >= 0.95 ? 'medium' : 'light', 0.4 + 0.4 * strength, 'boost');
   }
 
   startStar(seconds = PHYSICS.starTime) {
@@ -353,7 +421,11 @@ export class Kart {
         this.boostTimer = 0;
         this._startSpin('shrink', 0.8, 0.55);
       }
-      if (!wasShrunk || this.invulnTimer <= 0) bus.emit('kart:hit', { kart: this, kind: 'shrink' });
+      if (!wasShrunk || this.invulnTimer <= 0) {
+        this._hitStop('shrink');
+        bus.emit('kart:hit', { kart: this, kind: 'shrink' });
+        this._haptic('medium', 0.6, 'hit');
+      }
       return true;
     }
     if (this.invulnTimer > 0) return false;
@@ -366,12 +438,17 @@ export class Kart {
     } else if (kind === 'squash') {
       this._startSpin('spin', PHYSICS.spinOutTime, 0.3);
       this.squashTimer = 1.4;
+      this._hitStop('spin');
       bus.emit('kart:hit', { kart: this, kind: 'spin', squash: true });
+      this._haptic('heavy', 0.8, 'hit');
       return true;
     } else {
       this._startSpin('spin', PHYSICS.spinOutTime, 0.45);
     }
-    bus.emit('kart:hit', { kart: this, kind: kind === 'tumble' ? 'tumble' : 'spin' });
+    const k2 = kind === 'tumble' ? 'tumble' : 'spin';
+    this._hitStop(k2);
+    bus.emit('kart:hit', { kart: this, kind: k2 });
+    this._haptic('heavy', k2 === 'tumble' ? 1 : 0.75, 'hit');
     return true;
   }
 
@@ -496,6 +573,7 @@ export class Kart {
       const time = PHYSICS.miniTurboTimes?.[level - 1] ?? 0.5;
       bus.emit('kart:miniTurbo', { kart: this, level });
       this.applyBoost(time, MINI_TURBO_STRENGTH[level - 1] ?? 1, 'miniTurbo');
+      this._haptic(level >= 3 ? 'heavy' : level === 2 ? 'medium' : 'light', 0.35 + level * 0.2, 'miniTurbo');
     }
   }
 
@@ -507,6 +585,7 @@ export class Kart {
     this.driftTime = 0;
     this._driftPending = 0;
     bus.emit('kart:driftStart', { kart: this, dir: this.driftDir });
+    this._haptic('selection', 0.25, 'driftStart');
   }
 
   // ---- main update -----------------------------------------------------------------------
@@ -524,6 +603,14 @@ export class Kart {
   _update(dt) {
     this.time += dt;
     const P = PHYSICS;
+
+    // --- hit-stop: the struck kart freezes for a few frames so impacts read (and feel) heavier
+    if (this.hitStopTimer > 0) {
+      this.hitStopTimer = Math.max(0, this.hitStopTimer - dt);
+      this._prevDrift = !!this.input?.drift;
+      this._animate(dt, 0, 0);
+      return;
+    }
 
     // --- timers
     if (this.boostTimer > 0) this.boostTimer = Math.max(0, this.boostTimer - dt);
@@ -583,9 +670,22 @@ export class Kart {
     let throttle = disabled ? 0 : clamp(+raw.throttle || 0, 0, 1);
     let brake = disabled ? 0 : clamp(+raw.brake || 0, 0, 1);
     let steer = disabled ? 0 : clamp(+raw.steer || 0, -1, 1);
+    // Human input is rate-limited so digital touch arrows (0 -> ±1 jumps) ramp in smoothly.
+    if (this.isPlayer) steer = this._rampSteer(steer, dt);
+    if (!disabled && this.assist?.steering) {
+      steer = this._assistSteer(steer, dt);
+      // corner governor: the assist eases off (never past the player's own brake input) before a corner the
+      // kart cannot take flat out, so a hands-off kart never runs wide
+      if (this._assistGov < 1 && brake <= 0) {
+        throttle = Math.min(throttle, this._assistGov);
+        if (this._assistGov <= 0) brake = Math.max(brake, this._assistBrake);
+      }
+    } else { this.assistNudge = 0; this._assistGov = 1; this._assistBrake = 0; }
     const driftHeld = !disabled && !!raw.drift;
     const driftPressed = driftHeld && !this._prevDrift;
     this._prevDrift = !disabled && !!raw.drift;
+    if (!driftHeld) this._driftArmed = false;
+    else if (driftPressed) this._driftArmed = true;
     if (this.respawnTimer > 0) { throttle = 0; brake = 0; }
 
     this.steerSmoothed = damp(this.steerSmoothed, steer, 14, dt);
@@ -652,9 +752,9 @@ export class Kart {
       this.hopY += this.hopVel * dt;
       if (this.hopY <= 0) {
         this.hopY = 0; this.hopVel = 0; this.hopping = false;
-        if (driftHeld && !this.drifting && vF > DRIFT_MIN_SPEED * 0.8) {
-          if (Math.abs(steer) > 0.25) this._startDrift(Math.sign(steer));
-          else this._driftPending = DRIFT_PENDING_WINDOW;
+        this._landSquashVel = Math.min(this._landSquashVel, -0.9); // tiny squash on the drift hop landing
+        if (driftHeld && !this.drifting && vF > DRIFT_MIN_SPEED * 0.8 && Math.abs(steer) <= FEEL.driftEntrySteer) {
+          this._driftPending = DRIFT_PENDING_WINDOW; // (kept for snapshots; entry below works while held)
         }
       }
     }
@@ -669,10 +769,13 @@ export class Kart {
       this._trickTime = 0;
       bus.emit('kart:trick', { kart: this });
     }
-    if (this._driftPending > 0 && !this.drifting) {
-      if (!driftHeld) this._driftPending = 0;
-      else if (Math.abs(steer) > 0.3 && vF > DRIFT_MIN_SPEED * 0.8) this._startDrift(Math.sign(steer));
+    // Drift entry: "drift held + any steer". Once the drift button was pressed (hop), the drift commits
+    // the moment the kart is grounded with a little steering, however late the steer comes.
+    if (this._driftArmed && driftHeld && !this.drifting && !this.hopping && !this.airborne &&
+        Math.abs(steer) > FEEL.driftEntrySteer && vF > DRIFT_MIN_SPEED * 0.8) {
+      this._startDrift(Math.sign(steer));
     }
+    if (!driftHeld) this._driftPending = 0;
     if (this.drifting) {
       if (!driftHeld) this._cancelDrift(true);
       else if (vF < DRIFT_CANCEL_SPEED) this._cancelDrift(false);
@@ -690,6 +793,7 @@ export class Kart {
       if (lvl > this.driftLevel) {
         this.driftLevel = lvl;
         bus.emit('kart:driftLevel', { kart: this, level: lvl });
+        this._haptic('selection', 0.3 + 0.15 * lvl, 'driftLevel');
       }
     }
 
@@ -718,7 +822,8 @@ export class Kart {
     let nvF = vx * nf.x + vz * nf.z;
     let nvR = vx * nr.x + vz * nr.z;
     const mag0 = Math.hypot(nvF, nvR);
-    const grip = this.airborne ? AIR_GRIP : (this.drifting ? DRIFT_GRIP : (this.spinTimer > 0 ? 3 : NORMAL_GRIP));
+    const grip = this.airborne ? AIR_GRIP : (this.drifting ? DRIFT_GRIP : (this.spinTimer > 0 ? 3
+      : NORMAL_GRIP * (1 + FEEL.lowSteerGripBonus * (1 - Math.abs(steer)))));
     nvR *= Math.exp(-grip * dt);
     // Drift pushes the kart slightly outward (arcade feel)
     if (this.drifting && !this.airborne) nvR -= this.driftDir * speedAbs * 0.12 * dt;
@@ -740,6 +845,7 @@ export class Kart {
     pos.z += vz * dt;
     if (this.airborne) {
       this.velocity.y -= P.gravity * dt;
+      if (this.assist?.steering && this.surface === 'pit') this._assistPitSave(dt);
       pos.y += this.velocity.y * dt;
       this.airTime += dt;
       if (this._trick) this._trickTime += dt;
@@ -788,7 +894,7 @@ export class Kart {
       }
     }
 
-    // --- over a pit (open bridge edge / road gap / lava): fall below the road -> rescue
+    // --- over a pit (open bridge edge / road gap / starry void): fall below the road -> rescue
     if (info && info.pit && fin(info.roadY) && pos.y < info.roadY - 3.2) {
       this._startFall(info);
       return;
@@ -801,6 +907,136 @@ export class Kart {
     this._animate(dt, steer, throttle);
   }
 
+  // ---- steering: ramp + assist -----------------------------------------------------------
+  _rampSteer(target, dt) {
+    const cur = this._steerRamp;
+    let next;
+    if (target === cur) next = cur;
+    else if (Math.abs(target) > Math.abs(cur) && Math.sign(target) === Math.sign(cur || target)) {
+      const step = dt / Math.max(0.001, FEEL.steerRiseTime);
+      next = Math.min(Math.abs(target), Math.abs(cur) + step) * Math.sign(target);
+    } else {
+      // releasing / reversing: come back through centre quickly
+      const step = dt / Math.max(0.001, FEEL.steerFallTime);
+      next = Math.abs(target - cur) <= step ? target : cur + Math.sign(target - cur) * step;
+    }
+    this._steerRamp = fin(next) ? next : 0;
+    return this._steerRamp;
+  }
+
+  /**
+   * Steering assist: hands-off the kart follows the racing line (gain grows with strength); while the player
+   * steers, it only steps in when the predicted path leaves the road (edge guard). Deterministic, no allocation.
+   */
+  _assistSteer(user, dt) {
+    const track = this.track;
+    const a = this.assist;
+    const s = clamp(fin(+a.strength) ? +a.strength : ASSIST.defaultStrength, 0, 1);
+    this.assistNudge = 0;
+    if (s <= 0 || !track || this.respawnTimer > 0 || this.fallTimer > 0) return user;
+    const L = Math.max(100, fin(track.length) ? track.length : 1000);
+    const halfW = (fin(track.roadWidth) ? track.roadWidth : 24) / 2;
+    const t = wrap01(this.trackT || 0);
+    const speed = Math.max(0, this.speed || 0);
+    const h = this.heading;
+
+    // corner governor (hands-off only): compare the yaw the next corner needs with what the kart can do
+    this._assistGov = 1; this._assistBrake = 0;
+    const handsOffG = 1 - clamp(Math.abs(user) * 2, 0, 1);
+    if (handsOffG > 0 && !this.drifting && speed > 12) {
+      const dist = Math.max(20, speed * 0.9);
+      const h0 = trackHeading(track, t + 5 / L), h1 = trackHeading(track, t + (5 + dist) / L);
+      if (h0 !== null && h1 !== null) {
+        const kappa = Math.abs(wrapAngle(h1 - h0)) / dist;
+        const turn = this.stats.turnRate * (1 - HIGH_SPEED_TURN_LOSS * clamp(speed / Math.max(1, this.stats.maxSpeed), 0, 1));
+        if (kappa > 1e-4) {
+          const vAllowed = (turn * 0.92) / kappa;
+          const margin = 2 + (1 - s) * 10;
+          const over = speed - vAllowed - margin;
+          if (over > 0) {
+            this._assistGov = clamp(1 - over / 6, 0, 1) * handsOffG + (1 - handsOffG);
+            if (over > 8) this._assistBrake = clamp((over - 8) / 10, 0, 0.6) * s * handsOffG;
+          }
+        }
+      }
+    }
+
+    // edge guard: predicted lateral position in ~0.55 s vs the paved edge
+    const H = trackHeading(track, t);
+    let danger = 0, guard = 0;
+    if (H !== null) {
+      const vLat = this.velocity.x * -Math.cos(H) + this.velocity.z * Math.sin(H);
+      const lat = fin(this.lateral) ? this.lateral : 0;
+      const latP = lat + vLat * 0.55;
+      const lim = halfW - 2;
+      if (Math.abs(latP) > lim && (Math.sign(vLat) === Math.sign(latP) || Math.abs(lat) > lim)) {
+        danger = clamp((Math.abs(latP) - lim) / 2.5, 0, 1);
+        guard = -Math.sign(latP) * clamp(0.35 + danger * 1.2, 0, 1);
+      }
+    }
+
+    let out = user;
+    if (!this.drifting) {
+      // pure-pursuit toward the racing line (clamped inside the road)
+      const tab = racingLineTable(track);
+      const look = 7 + speed * 0.4;
+      const tA = wrap01(t + look / L);
+      const edge = halfW - 2.4;
+      const lat = clamp(lineLatAt(tab, tA), -edge, edge);
+      let px, pz;
+      if (track.pointAt) { const p = track.pointAt(tA, lat, _aT); px = p.x; pz = p.z; }
+      else {
+        const c = track.getPointAt?.(tA), tg = track.getTangentAt?.(tA);
+        if (!c || !tg) return user;
+        px = c.x - tg.z * lat; pz = c.z + tg.x * lat;
+      }
+      if (!fin(px) || !fin(pz)) return user;
+      const err = wrapAngle(Math.atan2(px - this.position.x, pz - this.position.z) - h);
+      const dErr = clamp((err - this._assistPrevErr) / Math.max(1e-3, dt), -8, 8);
+      this._assistPrevErr = err;
+      const lineSteer = clamp(-(err * 2.8) - dErr * 0.06, -1, 1);
+      const handsOff = 1 - clamp(Math.abs(user) * 1.6, 0, 1);
+      const wLine = handsOff * (0.35 + 0.65 * s);
+      out = user + (lineSteer - user) * wLine;
+      this.assistNudge = Math.max(this.assistNudge, wLine * Math.min(1, Math.abs(lineSteer - user)));
+    } else {
+      this._assistPrevErr = 0;
+    }
+    if (danger > 0) {
+      const gw = danger * Math.min(1, 0.4 + s);
+      out = out + (guard - out) * gw;
+      this.assistNudge = Math.max(this.assistNudge, gw);
+    }
+    return clamp(out, -1, 1);
+  }
+
+  /** Assist safety net while flying over a pit / road gap: carry the kart back over solid road. */
+  _assistPitSave(dt) {
+    const track = this.track;
+    const s = clamp(fin(+this.assist?.strength) ? +this.assist.strength : ASSIST.defaultStrength, 0, 1);
+    if (s <= 0 || !track) return;
+    const H = trackHeading(track, wrap01(this.trackT || 0));
+    if (H === null) return;
+    const fx = Math.sin(H), fz = Math.cos(H), rx = -Math.cos(H), rz = Math.sin(H);
+    const halfW = (fin(track.roadWidth) ? track.roadWidth : 24) / 2;
+    // soften the fall
+    this.velocity.y += PHYSICS.gravity * 0.45 * s * dt;
+    // keep moving along the course
+    const vT = this.velocity.x * fx + this.velocity.z * fz;
+    if (vT < 24) { const add = Math.min(24 - vT, 40 * s * dt); this.velocity.x += fx * add; this.velocity.z += fz * add; }
+    // drifted off the side (open bridge): pull back toward the road
+    const lat = fin(this.lateral) ? this.lateral : 0;
+    if (Math.abs(lat) > halfW - 1) {
+      const vL = this.velocity.x * rx + this.velocity.z * rz;
+      const want = -Math.sign(lat) * 9 * s;
+      if (Math.sign(want) !== Math.sign(vL) || Math.abs(vL) < Math.abs(want)) {
+        const add = clamp(want - vL, -30 * dt, 30 * dt);
+        this.velocity.x += rx * add; this.velocity.z += rz * add;
+      }
+    }
+    this.assistNudge = Math.max(this.assistNudge, 0.8 * s);
+  }
+
   _startFall(info) {
     this._cancelDrift(false);
     this.boostTimer = 0;
@@ -809,7 +1045,12 @@ export class Kart {
     this._trick = false;
     this.loseCoins(3);
     const water = this.track?.waterLevel ?? -1;
-    bus.emit('kart:fall', { kart: this, position: new THREE.Vector3(this.position.x, water + 0.2, this.position.z), lava: this.track?.theme === 'lava' });
+    // pitKind: 'water' (lagoons, rivers) | 'void' (starry void of the Night world). `lava` is kept for older
+    // listeners (HUD/audio): true means "not water" -> no splash.
+    const pitKind = this.track?.pitKind === 'void' || this.track?.theme === 'night' || this.track?.theme === 'lava' ? 'void' : 'water';
+    const isVoid = pitKind === 'void';
+    bus.emit('kart:fall', { kart: this, position: new THREE.Vector3(this.position.x, isVoid ? this.position.y : water + 0.2, this.position.z),
+      pitKind, void: isVoid, lava: isVoid });
     void info;
   }
 
@@ -882,8 +1123,12 @@ export class Kart {
     this.airborne = false;
     this.airTime = 0;
     this._fromRamp = false;
-    this._landSquashVel = -Math.min(3.5, impact * 0.12);
-    if (airTime > 0.12 || wasRamp) bus.emit('kart:land', { kart: this, impact, airTime });
+    this._landSquashVel = -Math.min(4.5, 0.6 + impact * 0.15);
+    if (airTime > 0.12 || wasRamp) {
+      const intensity = clamp(impact / 22 + airTime * 0.25, 0, 1);
+      bus.emit('kart:land', { kart: this, impact, airTime, intensity, squash: Math.min(0.35, 0.05 + impact * 0.012) });
+      this._haptic(intensity > 0.6 ? 'medium' : 'light', intensity, 'land');
+    }
     if (this._trick) {
       this._trick = false;
       if (this.spinTimer <= 0) this.applyBoost(TRICK_BOOST_TIME, 0.8, 'trick');
@@ -905,12 +1150,19 @@ export class Kart {
       const vn = this.velocity.x * _n.x + this.velocity.z * _n.z;
       if (vn < 0) {
         const impact = -vn;
-        // reflect normal component with restitution, damp tangential a little
+        const vmag = Math.hypot(this.velocity.x, this.velocity.z);
+        // sin(incidence): ~0 = grazing the wall, 1 = head-on. Shallow contacts keep almost all their speed.
+        const along = vmag > 1e-3 ? clamp(impact / vmag, 0, 1) : 1;
+        const headOn = clamp((along - 0.2) / 0.5, 0, 1);
+        const hk = headOn * headOn * (3 - 2 * headOn);
         const tx = this.velocity.x - _n.x * vn;
         const tz = this.velocity.z - _n.z * vn;
-        const tangKeep = 1 - WALL_FRICTION * clamp(impact / 12, 0, 1);
-        this.velocity.x = tx * tangKeep - _n.x * vn * WALL_RESTITUTION;
-        this.velocity.z = tz * tangKeep - _n.z * vn * WALL_RESTITUTION;
+        // friction scales with the impact speed so grinding along a wall (tiny repeated contacts) costs ~nothing
+        const friction = (1 - FEEL.wallGlanceKeep) + (WALL_FRICTION - (1 - FEEL.wallGlanceKeep)) * hk;
+        const tangKeep = 1 - friction * clamp(impact / 12, 0, 1);
+        const rest = WALL_RESTITUTION_GLANCE + (WALL_RESTITUTION - WALL_RESTITUTION_GLANCE) * hk;
+        this.velocity.x = tx * tangKeep - _n.x * vn * rest;
+        this.velocity.z = tz * tangKeep - _n.z * vn * rest;
         // glancing hit: steer the nose along the wall so we don't grind
         const f = this.forward;
         const fdotn = f.x * _n.x + f.z * _n.z;
@@ -918,12 +1170,14 @@ export class Kart {
           const desired = Math.atan2(tx, tz);
           let d = desired - this.heading;
           d = Math.atan2(Math.sin(d), Math.cos(d));
-          this.heading = this.heading + d * 0.35;
+          this.heading = this.heading + d * (0.5 - 0.15 * hk);
         }
         if (impact > 3 && this._wallCooldown <= 0) {
           this._wallCooldown = 0.25;
-          if (this.drifting && impact > 12) this._cancelDrift(false);
-          bus.emit('kart:wallBump', { kart: this, intensity: clamp(impact / 25, 0, 1), impactSpeed: impact });
+          if (this.drifting && impact > 12 && hk > 0.5) this._cancelDrift(false);
+          const intensity = clamp(impact / 25, 0, 1);
+          bus.emit('kart:wallBump', { kart: this, intensity, impactSpeed: impact, glancing: hk < 0.35 });
+          if (intensity > 0.15) this._haptic(intensity > 0.6 ? 'medium' : 'light', intensity, 'wall');
         }
       }
     }
@@ -1112,7 +1366,9 @@ export function resolveKartCollisions(karts) {
       const impact = Math.max(0, relVn);
       if (impact > 2 && (a.bumpCooldown || 0) <= 0 && (b.bumpCooldown || 0) <= 0) {
         a.bumpCooldown = 0.3; b.bumpCooldown = 0.3;
-        bus.emit('kart:bump', { a, b, intensity: clamp(impact / 20, 0, 1), impactSpeed: impact });
+        const intensity = clamp(impact / 20, 0, 1);
+        bus.emit('kart:bump', { a, b, intensity, impactSpeed: impact });
+        if (intensity > 0.2) { a._haptic?.('light', intensity, 'bump'); b._haptic?.('light', intensity, 'bump'); }
       }
     }
   }

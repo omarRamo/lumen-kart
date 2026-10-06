@@ -12,6 +12,25 @@ const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const _tan = new THREE.Vector3();
 const _pt = new THREE.Vector3();
 
+// Per-character racing personalities (CHARACTERS[i].id). Values are blended with a little randomness so two
+// races never look identical. style is informative (HUD/debug); the numbers drive behaviour:
+//   aggression 0..1  -> how eagerly items are fired       driftLove 0..1 -> how often corners are drifted
+//   driftLevel       -> mini-turbo stage aimed for (3 = comet violet)
+//   caution          -> corner speed margin (>1 brakes later)   lookMul -> steering look-ahead
+//   bumper 0..1      -> leans into karts alongside (heavy karts)  boxSeek 0..1 -> detours to grab light prisms
+//   sniper           -> fires seeds/fireflies from further away  reaction -> item reaction time multiplier
+//   pace             -> tiny top-speed offset (rival flavour, ±1 %)
+export const PERSONALITIES = {
+  lumen:   { style: 'balanced',    aggression: 0.5,  driftLove: 0.75, laneWeave: 0.15, boxSeek: 0.45, caution: 1.0 },
+  zina:    { style: 'drift-master', aggression: 0.35, driftLove: 1.0, driftLevel: 3, lookMul: 1.05, caution: 1.03, boxSeek: 0.3 },
+  pip:     { style: 'opportunist', aggression: 0.7,  driftLove: 0.6,  laneWeave: 0.26, boxSeek: 1.0, reaction: 0.7 },
+  coralie: { style: 'careful',     aggression: 0.25, driftLove: 0.55, laneWeave: 0.1, caution: 0.96, hazardSight: 0.25, boxSeek: 0.5 },
+  rivo:    { style: 'nervous',     aggression: 0.55, driftLove: 0.85, laneWeave: 0.32, laneFreqMul: 1.8, boxSeek: 0.6, reaction: 0.8 },
+  jagu:    { style: 'speedster',   aggression: 0.45, driftLove: 0.7,  lookMul: 1.1, caution: 1.07, pace: 0.006, boxSeek: 0.3 },
+  kibo:    { style: 'bumper',      aggression: 0.6,  driftLove: 0.5,  bumper: 1.0, laneWeave: 0.12, boxSeek: 0.4 },
+  nox:     { style: 'aggressive',  aggression: 1.0,  driftLove: 0.85, sniper: true, reaction: 0.5, pace: 0.01, boxSeek: 0.7 },
+};
+
 export class AIDriver {
   constructor(kart, track, { difficulty = 'medium', personality = null } = {}) {
     this.kart = kart;
@@ -21,18 +40,31 @@ export class AIDriver {
     this.skill = clamp(this.cfg.aiSkill ?? 0.75, 0, 1);
 
     const r = () => Math.random();
-    const p = personality || {};
+    const base = PERSONALITIES[kart?.character?.id] || null;
+    const p = { ...(base || {}), ...(personality || {}) };
+    this.personality = p;
+    this.style = p.style || 'random';
+    const jitter = (v, amt) => clamp(v + (r() - 0.5) * amt, 0, 1);
     // Personality: preferred lane, how much it weaves, aggression with items, drift love, look-ahead.
     this.laneBias = p.laneBias ?? (r() * 2 - 1) * 0.6;          // fraction of half road width
-    this.laneWeave = p.laneWeave ?? 0.12 + r() * 0.2;
-    this.laneFreq = 0.04 + r() * 0.07;
+    this.laneWeave = p.laneWeave !== undefined ? p.laneWeave * (0.85 + r() * 0.3) : 0.12 + r() * 0.2;
+    this.laneFreq = (0.04 + r() * 0.07) * (p.laneFreqMul || 1);
     this.lanePhase = r() * Math.PI * 2;
-    this.aggression = p.aggression ?? r();
-    this.driftLove = clamp(p.driftLove ?? (this.skill + (r() - 0.5) * 0.35), 0.1, 1);
-    this.lookMul = p.lookMul ?? 0.9 + r() * 0.25;
-    this.caution = p.caution ?? 0.9 + r() * 0.2;
-    this.reaction = 0.15 + (1 - this.skill) * 0.6 + r() * 0.3;
-    this.noiseAmp = (1 - this.skill) * 0.12;
+    this.aggression = p.aggression !== undefined ? jitter(p.aggression, 0.15) : r();
+    // 50cc AIs are softer item users; 150cc+ AIs fight
+    this.aggression *= 0.55 + 0.45 * this.skill;
+    if (p.aggression >= 0.95) this.aggression = Math.max(this.aggression, 0.75);
+    this.driftLove = clamp(p.driftLove !== undefined ? p.driftLove * (0.75 + 0.35 * this.skill) : (this.skill + (r() - 0.5) * 0.35), 0.1, 1);
+    this.lookMul = (p.lookMul ?? 1) * (0.92 + r() * 0.16);
+    this.caution = (p.caution ?? 1) * (0.94 + r() * 0.1);
+    this.reaction = (0.15 + (1 - this.skill) * 0.6 + r() * 0.3) * (p.reaction ?? 1);
+    this.noiseAmp = (1 - this.skill) * 0.12 * (p.laneFreqMul ? 1.4 : 1);
+    this.bumper = clamp(p.bumper ?? 0, 0, 1);
+    this.boxSeek = clamp(p.boxSeek ?? 0.4, 0, 1);
+    this.sniper = !!p.sniper;
+    this.hazardSight = clamp(this.skill + (p.hazardSight ?? 0), 0, 1);
+    this.pace = fin(p.pace) ? p.pace : 0;
+    this._rb = null;
 
     this.time = r() * 100;
     this.prevErr = 0;
@@ -42,7 +74,8 @@ export class AIDriver {
     this.wrongWayTime = 0;
     this.driftCooldown = 0;
     this.driftOppositeTime = 0;
-    this.driftTargetLevel = 2 + (r() < this.skill ? 1 : 0);
+    this.fixedDriftLevel = p.driftLevel || 0;
+    this.driftTargetLevel = this.fixedDriftLevel || 2 + (r() < this.skill ? 1 : 0);
     this.itemHoldTime = 0;
     this.itemCooldown = 0;
     this.lastItem = null;
@@ -104,7 +137,7 @@ export class AIDriver {
     const disabled = kart.spinTimer > 0 || kart.respawnTimer > 0 || kart.stallTimer > 0;
 
     // ---- rubber band / speed scaling
-    this._rubberBand(ctx);
+    this._rubberBand(ctx, dt);
 
     // ---- course geometry
     const tanNow = this._tangent(t);
@@ -116,6 +149,9 @@ export class AIDriver {
     // ---- lane selection
     let lane = this.laneBias * halfW * 0.55 + Math.sin(this.time * this.laneFreq * Math.PI * 2 + this.lanePhase) * halfW * this.laneWeave;
     lane *= 1 - clamp(cornerMag / 1.2, 0, 0.75); // tighten toward the racing line in corners
+    // opportunists detour through light prisms (item boxes) when empty-handed
+    const seek = this._boxLane(ctx, t, L, halfW, dt);
+    if (seek !== null) lane += (seek - lane) * this.boxSeek * (1 - clamp(cornerMag / 1.2, 0, 0.7));
     const avoid = this._avoidance(ctx, t, L, halfW, lane);
     this.avoidOffset += (avoid - this.avoidOffset) * (1 - Math.exp(-6 * dt));
     lane = clamp(lane + this.avoidOffset, -halfW * 0.8, halfW * 0.8);
@@ -200,7 +236,7 @@ export class AIDriver {
         drift = true;
         this._driftAttempt = 0.5;
         this._driftSteerDir = cornerFar > 0 ? -1 : 1;
-        this.driftTargetLevel = Math.random() < this.skill ? 3 : 2;
+        this.driftTargetLevel = this.fixedDriftLevel || (Math.random() < this.skill ? 3 : 2);
       } else {
         this.driftCooldown = 1.0;
       }
@@ -263,21 +299,29 @@ export class AIDriver {
     try { this.kart.respawn?.(); } catch { /* ignore */ }
   }
 
-  _rubberBand(ctx) {
+  /**
+   * Fair rubber-banding per class: at 50cc an AI behind the player gets at most +3 % (no blatant catch-up) while
+   * AIs ahead ease off up to -11 % so a young player can come back; at 150/200cc AIs behind push up to +12 % and the
+   * leaders barely lift (-2..-3.5 %) so the fight is real. Smoothed so speed never jumps.
+   */
+  _rubberBand(ctx, dt = 1 / 60) {
     const kart = this.kart;
-    const base = this.cfg.aiSpeedFactor ?? 0.94;
-    const rb = this.cfg.rubberBand ?? 0.1;
+    const cfg = this.cfg;
+    const base = (cfg.aiSpeedFactor ?? 0.94) * (1 + this.pace);
+    const behind = cfg.rubberBandBehind ?? cfg.rubberBand ?? 0.1;
+    const ahead = cfg.rubberBandAhead ?? (cfg.rubberBand ?? 0.1) * 0.8;
     const player = ctx.player;
     let scale = base;
     if (player && player !== kart && !player.finished && !kart.finished && fin(player.raceProgress) && fin(kart.raceProgress)) {
       const L = Math.max(100, this.track.length || 1000);
       const gap = (kart.raceProgress - player.raceProgress) * L; // + ahead of player
-      if (gap < 0) scale = base + rb * clamp(-gap / 160, 0, 1) * 1.1;
-      else scale = base - rb * 0.8 * clamp(gap / 200, 0, 1);
+      if (gap < 0) scale = base + behind * clamp((-gap - 15) / 170, 0, 1);
+      else scale = base - ahead * clamp((gap - 10) / 180, 0, 1);
     } else if (kart.finished) {
       scale = base * 0.9;
     }
-    kart.maxSpeedScale = scale;
+    this._rb = this._rb === null ? scale : this._rb + (scale - this._rb) * (1 - Math.exp(-1.5 * dt));
+    kart.maxSpeedScale = this._rb;
   }
 
   _tangent(t) {
@@ -359,6 +403,11 @@ export class AIDriver {
         if (!o || o === kart) continue;
         const dx = o.position.x - kart.position.x, dz = o.position.z - kart.position.z;
         const ahead = dx * fx + dz * fz;
+        if (this.bumper > 0 && Math.abs(ahead) < 3 && !o.finished && (o.mass || 1) <= (kart.mass || 1) * 1.1) {
+          // heavy bumper (Kibo): lean into a kart running alongside
+          const sideB = dx * rx + dz * rz;
+          if (Math.abs(sideB) > 1.6 && Math.abs(sideB) < 6) offset += Math.sign(sideB) * this.bumper * 1.6;
+        }
         if (ahead < 0.5 || ahead > 14) continue;
         const rel = (kart.speed || 0) - (o.speed || 0);
         if (rel < 1 && ahead > 5) continue;
@@ -371,6 +420,44 @@ export class AIDriver {
       }
     }
     return clamp(offset, -halfW * 0.8, halfW * 0.8);
+  }
+
+  /** Lane (offset from the racing line, m) that passes through the next active item box, or null. */
+  _boxLane(ctx, t, L, halfW, dt) {
+    const kart = this.kart;
+    const sys = ctx.itemSystem;
+    if (this.boxSeek <= 0 || !sys || kart.item != null || sys.roulettes?.has?.(kart) || kart.finished) { this._seekLane = null; return null; }
+    this._seekTimer = (this._seekTimer || 0) - dt;
+    if (this._seekTimer > 0) return this._seekLane ?? null;
+    this._seekTimer = 0.25;
+    this._seekLane = null;
+    const boxes = sys.boxes;
+    if (!Array.isArray(boxes) || !boxes.length) return null;
+    if (!this._boxCache) this._boxCache = new WeakMap();
+    let best = null, bestAhead = Infinity;
+    for (const b of boxes) {
+      if (!b || !b.active || !b.base) continue;
+      const dx = b.base.x - kart.position.x, dz = b.base.z - kart.position.z;
+      if (dx * dx + dz * dz > 70 * 70) continue;
+      let info = this._boxCache.get(b);
+      if (!info) {
+        let si = null;
+        try { si = this.track.getSurfaceInfo(b.base); } catch { si = null; }
+        if (!si || !fin(si.t) || !fin(si.lateral)) continue;
+        info = { t: si.t, lateral: si.lateral };
+        this._boxCache.set(b, info);
+      }
+      let dT = info.t - t; dT -= Math.round(dT);
+      const aheadM = dT * L;
+      if (aheadM < 12 || aheadM > 60) continue;
+      const lane = info.lateral - this._lineLat(info.t);
+      if (Math.abs(info.lateral) > halfW - 1.5) continue;
+      // nearest row first, then the box closest to our current plan
+      const score = aheadM + Math.abs(lane) * 1.5;
+      if (score < bestAhead) { bestAhead = score; best = lane; }
+    }
+    this._seekLane = best;
+    return best;
   }
 
   _lineLat(t) {
@@ -401,10 +488,10 @@ export class AIDriver {
     if (!this._seen) this._seen = new WeakMap();
     let v = this._seen.get(hz);
     if (v === undefined) {
-      v = Math.random() < 0.25 + this.skill * 0.75;
+      v = Math.random() < 0.25 + this.hazardSight * 0.75;
       try { this._seen.set(hz, v); } catch { return v; }
     }
-    return v && ahead < range * (0.55 + this.skill * 0.45);
+    return v && ahead < range * (0.55 + this.hazardSight * 0.45);
   }
 
   _items(dt, ctx, cornerFar, disabled, inp) {
@@ -425,7 +512,8 @@ export class AIDriver {
     const straight = Math.abs(cornerFar) < 0.3;
     const others = this._relKarts(ctx);
     const behindClose = others.some((o) => o.ahead < -2 && o.ahead > -18 && Math.abs(o.side) < 4);
-    const aheadAligned = others.some((o) => o.ahead > 4 && o.ahead < 45 && Math.abs(o.side) < 1.2 + o.ahead * 0.06);
+    const reach = this.sniper ? 65 : 45, cone = this.sniper ? 1.6 : 1;
+    const aheadAligned = others.some((o) => o.ahead > 4 && o.ahead < reach && Math.abs(o.side) < (1.2 + o.ahead * 0.06) * cone);
     let use = false;
     let drag = false;
 
@@ -454,7 +542,7 @@ export class AIDriver {
         use = aheadAligned || hold > 14 / eager;
         break;
       case 'red_shell':
-        use = (place > 1 && others.some((o) => o.ahead > 5 && o.ahead < 90 && Math.abs(o.angle) < 0.8)) || hold > 8 / eager;
+        use = (place > 1 && others.some((o) => o.ahead > 5 && o.ahead < (this.sniper ? 120 : 90) && Math.abs(o.angle) < 0.8)) || hold > 8 / eager;
         drag = !use && place === 1;
         break;
       case 'bomb':

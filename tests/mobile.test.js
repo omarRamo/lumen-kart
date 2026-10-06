@@ -120,3 +120,44 @@ test('native gravity projects consistently in both landscape orientations', () =
   assert.equal(gravityTilt({x:0,y:0},0),null);
   assert.ok(gravityTilt({x:0.3,y:-0.9},0) > 15);
 });
+
+test('back walks the menu flow Driver → Course → Class → Mode → Title, then lets the app exit', () => {
+  const shown = [];
+  const menu = Object.assign(Object.create(Menu.prototype), { screen: 'select', h: {}, settingsReturn: 'title', _show(name) { shown.push(name); this.screen = name; } });
+  while (menu.back()) { /* walk */ }
+  assert.deepEqual(shown, ['course', 'class', 'mode', 'title']);
+  assert.equal(menu.back(), false, 'at the title the Android back button may exit the app');
+  menu.screen = 'settings'; menu.settingsReturn = 'pause';
+  menu.back();
+  assert.equal(menu.screen, 'pause');
+  menu.screen = 'credits'; menu.back();
+  assert.equal(menu.screen, 'settings');
+  let resumed = false;
+  menu.screen = 'pause'; menu.h = { onResume: () => { resumed = true; } };
+  menu.back();
+  assert.equal(resumed, true);
+});
+
+test('settings-driven tilt does not echo back, a toolbar toggle reports the new steering mode', async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { isSecureContext: false };
+  const reported = [];
+  const fake = (enabled) => Object.assign(Object.create(MobileControls.prototype), {
+    enabled, tiltEnabled: false, status: { textContent: '' }, sensorButton: { textContent: '', setAttribute() {} },
+    onSteeringChange: (m) => reported.push(m), recenter() {},
+  });
+  try {
+    const off = fake(false);
+    assert.equal(off.ensureTilt(), undefined, 'no sensor request when touch controls are disabled');
+    const on = fake(true);
+    on.tiltEnabled = true;
+    await on.enableTilt(false);
+    assert.equal(on.tiltEnabled, false);
+    assert.deepEqual(reported, ['touch']);
+    on.tiltEnabled = true;
+    await on.disableTilt();
+    assert.deepEqual(reported, ['touch'], 'settings-driven changes are not echoed');
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
+  }
+});

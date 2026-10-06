@@ -3,17 +3,32 @@
 import * as THREE from 'three';
 import { bus } from './events.js';
 
-const ADD_COUNT = 5000;     // additive glow / spark particles
-const SMOKE_COUNT = 2200;   // alpha-blended smoke / dust particles
-const CHUNK_COUNT = 700;    // instanced cubes: shards, debris, confetti, grass flecks
+// Particle budget per quality level (window.__lumenQuality: 'high' | 'medium' | 'low', default 'high').
+// Pools are sized once per race; emission rates and burst counts scale with `rate` every frame.
+export const FX_QUALITY = {
+  high:   { add: 5000, smoke: 2200, chunks: 700, streaks: 70, rate: 1 },
+  medium: { add: 3000, smoke: 1300, chunks: 420, streaks: 48, rate: 0.6 },
+  low:    { add: 1500, smoke: 650,  chunks: 220, streaks: 28, rate: 0.35 },
+};
+export function fxQuality() {
+  let q = null;
+  try { q = typeof window !== 'undefined' ? window.__lumenQuality : null; } catch (_) { q = null; }
+  return FX_QUALITY[q] ? q : 'high';
+}
 const FIREBALLS = 10;
-const RINGS = 16;
+const RINGS = 20;
 const STAR_SLOTS = 8;
 const STARS_PER = 5;
 const STREAKS = 70;
 
-const DRIFT_COLORS = [0xffffff, 0x3fb8ff, 0xff9a1f, 0xe040fb];
-const DRIFT_COLORS_HOT = [0xffffff, 0xa8e2ff, 0xffcf70, 0xf49cff];
+// LUMEN drift stages: 1 breeze mint #b5f3d0, 2 bloom dawn #ffc193, 3 comet violet #dbb2f6 (index 0 = no stage).
+// Sparks are born in the exact aura colour (HOT) and cool into a deeper shade of it so they stay readable
+// under additive blending + bloom on bright roads.
+const DRIFT_COLORS_HOT = [0xffffff, 0xb5f3d0, 0xffc193, 0xdbb2f6];
+const DRIFT_COLORS = [0xffffff, 0x4fdba4, 0xff8a4a, 0xa772ee];
+// Aurora (star item) ribbon colours and light-prism (item box) colours.
+const AURORA = [0xb5f3d0, 0x8fd3ff, 0xdbb2f6, 0xffc193, 0xf3d096, 0xc5f5de, 0xffb3c7];
+const PRISM = [0xffc193, 0xfff4c5, 0xb5f3d0, 0xdbb2f6, 0x8fd3ff, 0xffb3c7, 0xf3d096];
 
 // scratch (module-level, reused)
 const _v = new THREE.Vector3();
@@ -81,6 +96,7 @@ const POINT_VERT = /* glsl */`
   attribute float aRot;
   attribute float aShape;
   uniform float uScale;
+  uniform float uMaxSize;
   varying vec4 vColor;
   varying float vRot;
   varying float vShape;
@@ -88,8 +104,10 @@ const POINT_VERT = /* glsl */`
     vColor = aColor; vRot = aRot; vShape = aShape;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = aSize * uScale / max(0.2, -mv.z);
-    if (aSize <= 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    // particles that drift into the lens fade out and never cover the screen
+    vColor.a *= smoothstep(0.8, 3.2, -mv.z);
+    gl_PointSize = min(aSize * uScale / max(0.2, -mv.z), uMaxSize);
+    if (aSize <= 0.0 || vColor.a <= 0.002) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   }
 `;
 const POINT_FRAG = /* glsl */`
@@ -152,7 +170,7 @@ class PointPool {
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
     this.geometry = geo;
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uMap: { value: texture }, uScale: { value: 600 } },
+      uniforms: { uMap: { value: texture }, uScale: { value: 600 }, uMaxSize: { value: 160 } },
       vertexShader: POINT_VERT,
       fragmentShader: POINT_FRAG,
       transparent: true,
@@ -162,9 +180,11 @@ class PointPool {
     this.points = new THREE.Points(geo, this.material);
     this.points.frustumCulled = false;
     const uScale = this.material.uniforms.uScale;
+    const uMax = this.material.uniforms.uMaxSize;
     this.points.onBeforeRender = (renderer, scene, camera) => {
       if (!camera?.isPerspectiveCamera) return;
       renderer.getDrawingBufferSize(_drawSize);
+      uMax.value = Math.max(16, _drawSize.y * 0.22);
       uScale.value = _drawSize.y / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)) * (camera.zoom ? 1 / camera.zoom : 1));
     };
   }
@@ -238,7 +258,8 @@ class ChunkPool {
     this.cursor = 0;
     this.alive = 0;
     this.geometry = new THREE.BoxGeometry(1, 1, 1);
-    this.material = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.05, emissive: 0x222222 });
+    // Unlit: pastel petals/leaves/confetti keep their exact palette colour and cost less on phones.
+    this.material = new THREE.MeshBasicMaterial({ color: 0xffffff });
     this.mesh = new THREE.InstancedMesh(this.geometry, this.material, count);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false;
@@ -354,14 +375,17 @@ const FIRE_VERT = /* glsl */`
 const FIRE_FRAG = /* glsl */`
   uniform float uLife;
   uniform float uOpacity;
+  uniform vec3 uC0;
+  uniform vec3 uC1;
+  uniform vec3 uC2;
   varying float vNoise;
   varying vec3 vN;
   varying vec3 vV;
   void main() {
     float fres = 1.0 - abs(dot(vN, vV));
     float heat = clamp(0.9 - uLife * 1.5 + vNoise * 0.4 - fres * 0.75, 0.0, 1.0);
-    vec3 col = mix(vec3(0.35, 0.03, 0.0), vec3(1.0, 0.45, 0.05), smoothstep(0.0, 0.45, heat));
-    col = mix(col, vec3(1.0, 0.95, 0.65), smoothstep(0.55, 1.0, heat));
+    vec3 col = mix(uC0, uC1, smoothstep(0.0, 0.45, heat));
+    col = mix(col, uC2, smoothstep(0.55, 1.0, heat));
     float edge = smoothstep(0.0, 0.55, 1.0 - fres);
     float a = uOpacity * pow(1.0 - uLife, 0.8) * edge;
     gl_FragColor = vec4(col * 1.15, a);
@@ -416,11 +440,16 @@ export class Effects {
     this.group.name = 'Effects';
     scene?.add(this.group);
 
+    this.quality = fxQuality();
+    const QB = FX_QUALITY[this.quality];
+    this.q = QB.rate;                 // emission multiplier (re-read every frame)
+    this.speedLines = true;           // settings hook ("reduce motion" can turn wind streaks off)
+    this.items = null;                // ItemSystem (for projectile trails), attached through the bus
     this.glowTex = makeGlowTexture();
     this.smokeTex = makeSmokeTexture();
-    this.add = new PointPool(ADD_COUNT, this.glowTex, THREE.AdditiveBlending, false);
-    this.smoke = new PointPool(SMOKE_COUNT, this.smokeTex, THREE.NormalBlending, true);
-    this.chunks = new ChunkPool(CHUNK_COUNT);
+    this.add = new PointPool(QB.add, this.glowTex, THREE.AdditiveBlending, false);
+    this.smoke = new PointPool(QB.smoke, this.smokeTex, THREE.NormalBlending, true);
+    this.chunks = new ChunkPool(QB.chunks);
     this.smoke.points.renderOrder = 5;
     this.add.points.renderOrder = 6;
     this.group.add(this.chunks.mesh, this.smoke.points, this.add.points);
@@ -430,7 +459,8 @@ export class Effects {
     this.fireballs = [];
     for (let i = 0; i < FIREBALLS; i++) {
       const mat = new THREE.ShaderMaterial({
-        uniforms: { uTime: { value: 0 }, uLife: { value: 0 }, uOpacity: { value: 1 } },
+        uniforms: { uTime: { value: 0 }, uLife: { value: 0 }, uOpacity: { value: 1 },
+          uC0: { value: new THREE.Color() }, uC1: { value: new THREE.Color() }, uC2: { value: new THREE.Color() } },
         vertexShader: FIRE_VERT, fragmentShader: FIRE_FRAG,
         transparent: true, depthWrite: false, blending: THREE.NormalBlending,
       });
@@ -511,6 +541,10 @@ export class Effects {
     this.streakMesh.renderOrder = 999;
     this.streakMesh.visible = false;
     this.group.add(this.streakMesh);
+    this.streakCount = Math.min(STREAKS, QB.streaks);
+    sg.setDrawRange(0, this.streakCount * 6);
+    this.streakKick = 0;
+    this.streakTint = new THREE.Color(1, 0.97, 0.88);
     this.streaks = [];
     for (let i = 0; i < STREAKS; i++) this.streaks.push({ ang: 0, k: 0, d: 0, len: 0, w: 0, spd: 0, bright: 0 });
     for (const s of this.streaks) this._resetStreak(s, true);
@@ -522,29 +556,52 @@ export class Effects {
     // colours (linear) reused for spawning
     this.driftCols = DRIFT_COLORS.map((h) => new THREE.Color(h));
     this.driftHot = DRIFT_COLORS_HOT.map((h) => new THREE.Color(h));
+    // LUMEN palette (src/theme.js): warm, pastel, never dark or aggressive.
     this.C = {
       white: new THREE.Color(0xffffff),
-      flameCore: new THREE.Color(1.0, 0.72, 0.22),
-      flameEnd: new THREE.Color(0.85, 0.1, 0.0),
-      flameBlue: new THREE.Color(0.55, 0.75, 1.0),
-      smokeLight: new THREE.Color(0xe8e8e8),
-      smokeGrey: new THREE.Color(0xb0b0b0),
-      smokeDark: new THREE.Color(0x3a3530),
-      smokeDarker: new THREE.Color(0x221e1b),
-      dust: new THREE.Color(0xc9a878),
-      dustEnd: new THREE.Color(0xe0cfae),
-      grass1: new THREE.Color(0x5dbb3a),
-      grass2: new THREE.Color(0x3d8f25),
-      dirt: new THREE.Color(0x7a5230),
-      spark: new THREE.Color(1.0, 0.85, 0.4),
-      sparkEnd: new THREE.Color(1.0, 0.3, 0.05),
-      orange: new THREE.Color(0xff7a1a),
-      yellow: new THREE.Color(0xffe14d),
+      cream: new THREE.Color(0xfff7dc),
+      flameCore: new THREE.Color(0xfff0ce),   // boost core: chest-star light
+      flameEnd: new THREE.Color(0xe98c73),    // scarf coral
+      flameBlue: new THREE.Color(0xb5f3d0),   // breeze mint glow
+      dawn: new THREE.Color(0xffc193),
+      comet: new THREE.Color(0xdbb2f6),
+      cometDeep: new THREE.Color(0x7a5cc4),
+      mint: new THREE.Color(0xb5f3d0),
+      echo: new THREE.Color(0xc5f5de),
+      gold: new THREE.Color(0xf3d096),
+      starGold: new THREE.Color(0xedc371),
+      firefly: new THREE.Color(0xffb36b),
+      fireflyCore: new THREE.Color(0xfff2c2),
+      sky: new THREE.Color(0x8fd3ff),
+      seed: new THREE.Color(0x7ed37a),
+      petal: new THREE.Color(0xffd34d),
+      petal2: new THREE.Color(0xffb23f),
+      petalHeart: new THREE.Color(0x9a6a3a),
+      smokeLight: new THREE.Color(0xf2efe6),
+      smokeGrey: new THREE.Color(0xcfc8bd),
+      smokeDark: new THREE.Color(0xd9cdea),   // explosion puffs: soft lavender, not soot
+      smokeDarker: new THREE.Color(0xb7a9d6),
+      dust: new THREE.Color(0xd9bf94),
+      dustEnd: new THREE.Color(0xeee0c4),
+      grass1: new THREE.Color(0x8fcf6a),
+      grass2: new THREE.Color(0x5fae55),
+      leaf: new THREE.Color(0x99d1b7),
+      dirt: new THREE.Color(0xa07a52),
+      spark: new THREE.Color(0xfff0ce),
+      sparkEnd: new THREE.Color(0xf3b07a),
+      orange: new THREE.Color(0xffc193),
+      yellow: new THREE.Color(0xf3d096),
       water: new THREE.Color(0xd8f3ff),
       waterEnd: new THREE.Color(0x7fc8ff),
-      debris: new THREE.Color(0x3b3330),
+      debris: new THREE.Color(0x8a7aa8),
     };
-    this.rainbow = [0xff3b5c, 0xff9f1c, 0xffe14d, 0x3ddc84, 0x2fb5ff, 0x8a5cff, 0xff5cc8].map((h) => new THREE.Color(h));
+    this.rainbow = PRISM.map((h) => new THREE.Color(h));
+    this.aurora = AURORA.map((h) => new THREE.Color(h));
+    this.fireSets = {
+      warm: [new THREE.Color(0xe98c73), new THREE.Color(0xffc193), new THREE.Color(0xfff2d8)],   // sunflower bloom
+      star: [new THREE.Color(0x6b5fd0), new THREE.Color(0x8fd3ff), new THREE.Color(0xf4fbff)],   // shooting star
+      soft: [new THREE.Color(0xc9a7e8), new THREE.Color(0xffd9b8), new THREE.Color(0xfffaf0)],   // small poof
+    };
 
     // bus subscriptions
     this.unsubs = [];
@@ -556,7 +613,12 @@ export class Effects {
       if (d.kind === 'shrink') this.burst('shrink', d.kart.position, { kart: d.kart });
       else this.burst('hitStars', d.kart.position, { kart: d.kart, kind: d.kind });
     });
-    on('kart:land', (d) => d.kart && this.burst('landingDust', d.kart.position, { kart: d.kart }));
+    on('kart:land', (d) => {
+      if (!d.kart) return;
+      this.burst('landingDust', d.kart.position, { kart: d.kart });
+      if (d.kart.surface === 'offroad') this.burst('leaves', d.kart.position, { count: 8 });
+      else if (finite(d.intensity) > 0.5) this.burst('lightMotes', d.kart.position, { count: 8 });
+    });
     on('race:finish', (d) => { if (d.kart?.isPlayer) this.burst('confetti', d.kart.position, { kart: d.kart }); });
     on('kart:wallBump', (d) => {
       const k = d.kart; if (!k?.position) return;
@@ -573,10 +635,15 @@ export class Effects {
     on('coin:pickup', (d) => d.position && this._burstCoin(d.position));
     on('kart:fall', (d) => {
       if (!d.position) return;
-      if (d.lava) { this.burst('explosion', d.position, { radius: 2.5, kind: 'small' }); this.burst('smoke', d.position, {}); }
+      const isVoid = d.pitKind ? d.pitKind === 'void' : !!d.lava;
+      if (isVoid) this.burst('voidFall', d.position, { kart: d.kart, scale: 1 });
       else this.burst('splash', d.position, { scale: 1.5 });
     });
-    on('item:splash', (d) => d.position && this.burst('splash', d.position, { scale: 0.6 }));
+    on('item:splash', (d) => {
+      if (!d.position) return;
+      if (d.pitKind === 'void') this.burst('voidFall', d.position, { scale: 0.45 });
+      else this.burst('splash', d.position, { scale: 0.6 });
+    });
     on('hazard:smash', (d) => d.position && this.burst('splash', d.position, { scale: 1.2 }));
     on('hazard:stomp', (d) => {
       if (!d.position) return;
@@ -584,33 +651,73 @@ export class Effects {
       this._ring(d.position, 0, null, 1, 7, 0.45, this.C.smokeLight, 0.7, 'ground', 0.35);
     });
     on('item:horn', (d) => {
+      // Résonance: Lumen's call -> concentric echo-mint rings + a soft halo of light notes
       if (!d.position) return;
       const r = finite(d.radius, 12);
-      this._ring(d.position, 0, null, 1, r, 0.45, this.C.yellow, 0.95, 'ground', 0.4);
-      this._ring(d.position, 0.12, null, 1, r * 0.8, 0.45, this.C.white, 0.8, 'ground', 0.3);
-      if (d.kart) this._ring(d.kart.position, 0, d.kart, 0.5, 4, 0.35, this.C.yellow, 0.9, 'kart', 0.3);
+      const C = this.C;
+      this._ring(d.position, 0, null, 1, r, 0.5, C.echo, 0.95, 'ground', 0.35);
+      this._ring(d.position, 0.09, null, 1, r * 0.82, 0.5, C.white, 0.75, 'ground', 0.25);
+      this._ring(d.position, 0.18, null, 1, r * 0.62, 0.5, C.mint, 0.7, 'ground', 0.3);
+      if (d.kart) {
+        this._ring(d.kart.position, 0, d.kart, 0.5, 4.5, 0.4, C.echo, 0.9, 'kart', 0.3);
+        this._ring(d.kart.position, 0.1, d.kart, 0.5, 3.2, 0.35, C.white, 0.7, 'kart', 0.25);
+      }
+      const p = d.position, n = this._n(28);
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        this.add.spawn(p.x + Math.cos(a) * 1.5, p.y + 0.8, p.z + Math.sin(a) * 1.5, Math.cos(a) * r * 1.4, rand(1, 3), Math.sin(a) * r * 1.4,
+          rand(0.4, 0.6), rand(0.5, 0.8), 0.1, C.white, C.echo, 0.9, 0, 2, 1, rand(-3, 3));
+      }
     });
     on('kart:slipstream', (d) => { if (d.kart) this._ring(d.kart.position, 0, d.kart, 0.4, 2.2, 0.3, this.C.water, 0.8, 'kart', 0.25); });
     on('kart:rocketEnd', (d) => d.kart && this.burst('smoke', d.kart.position, {}));
     on('kart:boost', (d) => {
       if (!d.kart) return;
       const st = this._state(d.kart);
-      if (d.source === 'mushroom' || d.source === 'item') st.bigBoost = true;
+      if (d.source === 'mushroom' || d.source === 'item') { st.bigBoost = true; st.boostKind = 'comet'; }
+      else if (d.source === 'miniTurbo') st.boostKind = 'mini';
+      else if (d.source !== 'star') st.boostKind = 'warm';
+      if (d.kart.isPlayer && d.source !== 'coin') {
+        this.streakKick = Math.max(this.streakKick, d.source === 'mushroom' || d.source === 'pad' || d.source === 'start' ? 1 : 0.7);
+        this.streakTint.copy(st.boostKind === 'comet' ? this.C.comet : st.boostKind === 'mini' ? this.driftCols[st.miniLevel || 1] : this.C.cream);
+      }
     });
+    on('kart:miniTurbo', (d) => { if (d.kart) this._state(d.kart).miniLevel = Math.max(1, Math.min(3, d.level | 0)); });
+    on('items:created', (d) => this.attachItems(d.system));
+    on('items:disposed', (d) => { if (d.system === this.items) this.items = null; });
     on('item:use', (d) => {
       if (d.kart && (d.item === 'mushroom' || d.item === 'triple_mushroom')) {
         const st = this._state(d.kart);
         st.bigBoost = true;
+        st.boostKind = 'comet';
         st.boostKick = 0.25;
+        // comet burst: violet ring + a puff of stardust
+        this._kartForward(d.kart, _fwd);
+        _v3.copy(d.kart.position).addScaledVector(_fwd, -1.4); _v3.y += 0.7;
+        this._ring(_v3, 0, d.kart, 0.4, 2.4, 0.3, this.C.comet, 0.9, 'kart', 0.3);
       }
     });
+    on('item:hit', (d) => {
+      // petal/leaf puff where an item lands on someone (soft, never gory)
+      if (!d.kart?.position) return;
+      this.burst(d.item === 'bomb' ? 'petals' : 'leaves', d.kart.position, { count: 10 });
+    });
+    // let an already-built ItemSystem find us (main builds items before effects)
+    bus.emit('fx:created', { effects: this });
   }
+
+  /** Attach the race ItemSystem so projectiles get trails (firefly glow, starry trail, seed dust, petals). */
+  attachItems(system) { if (system && Array.isArray(system.entities)) this.items = system; }
+
+  /** Quality-scaled particle count for bursts. */
+  _n(count) { return Math.max(1, Math.round(count * this.q)); }
 
   // ------------------------------------------------------------------ helpers
   _state(kart) {
     let s = this.kartState.get(kart);
     if (!s) {
-      s = { spark: 0, smoke: 0, flame: 0, dust: 0, fleck: 0, star: 0, puff: 0, bigBoost: false, boostKick: 0, lastBoost: 0 };
+      s = { spark: 0, smoke: 0, flame: 0, dust: 0, fleck: 0, star: 0, puff: 0, trail: 0, mote: 0, bigBoost: false, boostKick: 0, lastBoost: 0,
+        boostKind: 'warm', miniLevel: 1 };
       this.kartState.set(kart, s);
     }
     return s;
@@ -644,8 +751,10 @@ export class Effects {
     if (!(dt > 0)) return;
     dt = Math.min(dt, 0.1);
     this.time += dt;
+    this.q = FX_QUALITY[fxQuality()].rate;
     try {
       if (karts) for (const k of karts) if (k) this._emitKart(k, dt);
+      if (this.items) this._emitItemTrails(dt);
     } catch (err) { console.error('[effects] emit', err); }
     try {
       this.add.update(dt);
@@ -675,7 +784,7 @@ export class Effects {
       const lvl = Math.max(0, Math.min(3, finite(k.driftLevel) | 0));
       const dir = finite(k.driftDir, 1);
       if (lvl >= 1) {
-        st.spark += dt * (lvl === 3 ? 110 : lvl === 2 ? 90 : 70);
+        st.spark += dt * (lvl === 3 ? 110 : lvl === 2 ? 90 : 70) * this.q;
         const col = this.driftCols[lvl], hot = this.driftHot[lvl];
         while (st.spark >= 1) {
           st.spark -= 1;
@@ -688,7 +797,7 @@ export class Effects {
             rand(0.2, 0.42), rand(0.5, 0.85) * scale, 0.08, hot, col, 1, 26, 1.5, Math.random() < 0.3 ? 1 : 0);
         }
         // hot glow at the wheels (flickering)
-        st.puff += dt * 30;
+        st.puff += dt * 30 * Math.max(0.5, this.q);
         while (st.puff >= 1) {
           st.puff -= 1;
           for (let w = 0; w < 2; w++) {
@@ -696,9 +805,9 @@ export class Effects {
             add.spawn(_v.x, _v.y, _v.z, vx, vy + 1, vz, 0.1, (1.3 + lvl * 0.35) * scale, 0.6 * scale, hot, col, 0.9, 0, 0, 0);
           }
         }
-        st.smoke += dt * 8;
+        st.smoke += dt * 8 * this.q;
       } else {
-        st.smoke += dt * 22;
+        st.smoke += dt * 22 * this.q;
       }
       while (st.smoke >= 1) {
         st.smoke -= 1;
@@ -711,23 +820,23 @@ export class Effects {
 
     // ---- rocket exhaust
     if (finite(k.rocketTimer) > 0) {
-      st.rocket = (st.rocket || 0) + dt * 90;
+      st.rocket = (st.rocket || 0) + dt * 90 * this.q;
       while (st.rocket >= 1) {
         st.rocket -= 1;
         _v.copy(k.position).addScaledVector(fwd, -3.2); _v.y += 1.1;
         this.add.spawn(_v.x + rand(-0.4, 0.4), _v.y + rand(-0.4, 0.4), _v.z + rand(-0.4, 0.4), vx * 0.3 - fwd.x * rand(6, 12), rand(-1, 1), vz * 0.3 - fwd.z * rand(6, 12),
-          rand(0.2, 0.35), rand(1.4, 2.2), 0.2, C.yellow, C.orange, 1, 0, 2, 0);
+          rand(0.2, 0.35), rand(1.4, 2.2), 0.2, C.cream, C.mint, 1, 0, 2, 0); // flight feather: breeze trail
         if (Math.random() < 0.4) this.smoke.spawn(_v.x, _v.y, _v.z, vx * 0.1, rand(0.5, 2), vz * 0.1, rand(0.6, 1), 1, 3.5, C.smokeLight, C.smokeGrey, 0.45, -0.5, 2, 0, rand(-1, 1));
       }
     }
     // ---- slipstream air streaks
     if (finite(k.slipCharge) > 0.12) {
-      st.slip = (st.slip || 0) + dt * 40;
+      st.slip = (st.slip || 0) + dt * 40 * this.q;
       while (st.slip >= 1) {
         st.slip -= 1;
         const a = Math.random() * Math.PI * 2, r = rand(1.2, 2.2);
         _v.copy(k.position).addScaledVector(fwd, rand(0, 3)).addScaledVector(_right, Math.cos(a) * r); _v.y += 1 + Math.sin(a) * r * 0.6;
-        this.add.spawn(_v.x, _v.y, _v.z, vx * 0.55, 0, vz * 0.55, rand(0.18, 0.3), 0.18, 0.05, C.white, C.water, 0.55, 0, 0, 1);
+        this.add.spawn(_v.x, _v.y, _v.z, vx * 0.55, 0, vz * 0.55, rand(0.18, 0.3), 0.18, 0.05, C.white, C.mint, 0.55, 0, 0, 1);
       }
     }
 
@@ -735,7 +844,11 @@ export class Effects {
     const boost = finite(k.boostTimer);
     if (boost > 0) {
       const big = st.bigBoost;
-      st.flame += dt * (big ? 110 : 75);
+      const kind = st.boostKind;
+      // exhaust colours: comet (item) violet, mini-turbo = its drift stage colour, pads/start = warm dawn
+      const c0 = kind === 'comet' ? C.comet : kind === 'mini' ? this.driftHot[st.miniLevel || 1] : C.flameCore;
+      const c1 = kind === 'comet' ? C.cometDeep : kind === 'mini' ? this.driftCols[st.miniLevel || 1] : C.dawn;
+      st.flame += dt * (big ? 110 : 75) * this.q;
       const sz = (big ? 1.25 : 0.85) * scale;
       while (st.flame >= 1) {
         st.flame -= 1;
@@ -745,12 +858,29 @@ export class Effects {
           const back = rand(5, 10);
           add.spawn(_v.x, _v.y, _v.z,
             vx - fwd.x * back + rand(-0.7, 0.7), vy + rand(0.3, 1.6), vz - fwd.z * back + rand(-0.7, 0.7),
-            rand(0.12, 0.24), sz * rand(0.9, 1.3), sz * 0.3, C.flameCore, C.flameEnd, 0.75, -3, 0, 0);
+            rand(0.12, 0.24), sz * rand(0.9, 1.3), sz * 0.3, c0, c1, 0.75, -3, 0, 0);
           if (big && Math.random() < 0.35) {
             add.spawn(_v.x, _v.y, _v.z, vx * 0.9 - fwd.x * 3, vy * 0.9, vz * 0.9 - fwd.z * 3,
-              0.1, sz * 1.5, sz * 0.7, C.flameBlue, C.flameEnd, 0.35, 0, 0, 0);
+              0.1, sz * 1.5, sz * 0.7, C.flameBlue, c1, 0.35, 0, 0, 0);
           }
         }
+      }
+      // comet trail: long-lived stardust left in the air behind an item boost (reads as a comet tail)
+      if (kind === 'comet') {
+        st.trail += dt * 70 * this.q;
+        while (st.trail >= 1) {
+          st.trail -= 1;
+          _v.copy(k.position).addScaledVector(fwd, -1.6 - Math.random() * 0.8); _v.y += rand(0.4, 1.2);
+          add.spawn(_v.x + rand(-0.5, 0.5), _v.y, _v.z + rand(-0.5, 0.5), vx * 0.05, rand(-0.2, 0.4), vz * 0.05,
+            rand(0.45, 0.8), rand(0.7, 1.2) * scale, 0.1, Math.random() < 0.1 ? C.white : C.comet, C.cometDeep, 0.5, 0, 1, Math.random() < 0.25 ? 1 : 0, rand(-2, 2));
+        }
+      }
+      // soft light motes drifting off the kart while boosting
+      st.mote += dt * 9 * this.q;
+      while (st.mote >= 1) {
+        st.mote -= 1;
+        _v.copy(k.position).addScaledVector(_right, rand(-1.2, 1.2)).addScaledVector(fwd, rand(-1.5, 0.5)); _v.y += rand(0.3, 1.6);
+        add.spawn(_v.x, _v.y, _v.z, vx * 0.4, rand(0.6, 1.6), vz * 0.4, rand(0.6, 1.0), rand(0.25, 0.45) * scale, 0.02, C.cream, c1, 0.6, -0.5, 1.5, 0);
       }
       st.lastBoost = boost;
     } else {
@@ -772,8 +902,8 @@ export class Effects {
     // ---- offroad dust & grass flecks
     if (k.surface === 'offroad' && absSpeed > 4 && !airborne) {
       const rate = Math.min(1, absSpeed / 30);
-      st.dust += dt * 28 * rate;
-      st.fleck += dt * 22 * rate;
+      st.dust += dt * 28 * rate * this.q;
+      st.fleck += dt * 22 * rate * this.q;
       while (st.dust >= 1) {
         st.dust -= 1;
         const left = Math.random() < 0.5;
@@ -786,7 +916,7 @@ export class Effects {
         const left = Math.random() < 0.5;
         this._anchor(k, left ? 'wheelRL' : 'wheelRR', left ? 0.78 : -0.78, 0.15, -0.85, _v);
         const r = Math.random();
-        const col = r < 0.45 ? C.grass1 : r < 0.8 ? C.grass2 : C.dirt;
+        const col = r < 0.4 ? C.grass1 : r < 0.7 ? C.grass2 : r < 0.85 ? C.leaf : C.dirt;
         const s = rand(0.08, 0.16);
         this.chunks.spawn(_v.x, _v.y, _v.z,
           vx * 0.3 - fwd.x * rand(2, 6) + rand(-2, 2), rand(4, 8), vz * 0.3 - fwd.z * rand(2, 6) + rand(-2, 2),
@@ -796,15 +926,68 @@ export class Effects {
 
     // ---- star rainbow sparkles
     if (finite(k.starTimer) > 0) {
-      st.star += dt * 130;
+      st.star += dt * 75 * this.q;
       while (st.star >= 1) {
         st.star -= 1;
-        const hueCol = this.rainbow[(Math.random() * this.rainbow.length) | 0];
-        _c2.copy(hueCol).lerp(C.white, 0.35);
+        // Aurore: aurora-borealis ribbon colours cycling over time
+        const ai = ((this.time * 3 + Math.random() * 2) | 0) % this.aurora.length;
+        const hueCol = this.aurora[ai];
+        _c2.copy(hueCol).lerp(C.white, 0.15);
         const ox = rand(-1.1, 1.1), oy = rand(0.2, 1.8), oz = rand(-1.4, 1.0);
         _v.set(k.position.x + _right.x * ox + fwd.x * oz, k.position.y + oy, k.position.z + _right.z * ox + fwd.z * oz);
         add.spawn(_v.x, _v.y, _v.z, vx * 0.5 + rand(-1, 1), rand(0.5, 2.5), vz * 0.5 + rand(-1, 1),
-          rand(0.35, 0.7), rand(0.7, 1.2) * scale, 0.05, _c2, hueCol, 1, -1, 2, 1, rand(-3, 3));
+          rand(0.35, 0.7), rand(0.5, 0.9) * scale, 0.05, _c2, hueCol, 0.85, -1, 2, 1, rand(-3, 3));
+      }
+      // two aurora ribbons streaming from the rear wheels
+      st.trail += dt * 60 * this.q;
+      while (st.trail >= 1) {
+        st.trail -= 1;
+        const left = Math.random() < 0.5;
+        this._anchor(k, left ? 'wheelRL' : 'wheelRR', left ? 0.78 : -0.78, 0.35, -0.85, _v);
+        const col = this.aurora[((this.time * 6) | 0) % this.aurora.length];
+        add.spawn(_v.x, _v.y + rand(0, 0.5), _v.z, vx * 0.08, rand(0.4, 1.2), vz * 0.08,
+          rand(0.5, 0.8), rand(0.6, 1.0) * scale, 0.2, col, this.aurora[(((this.time * 6) | 0) + 2) % this.aurora.length], 0.4, -0.3, 1, 0);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ item trails
+  _emitItemTrails(dt) {
+    const ents = this.items?.entities;
+    if (!Array.isArray(ents)) return;
+    const add = this.add, C = this.C, q = this.q;
+    for (let i = 0; i < ents.length; i++) {
+      const e = ents[i];
+      if (!e || e.dead || !e.pos) continue;
+      const p = e.pos;
+      const vx = finite(e.vel?.x), vz = finite(e.vel?.z);
+      let rate = 0;
+      if (e.type === 'red_shell') rate = 55;
+      else if (e.type === 'blue_shell') rate = 70;
+      else if (e.type === 'green_shell') rate = 18;
+      else if (e.type === 'bomb') rate = e.flying ? 10 : 4;
+      else continue;
+      e.fxAcc = finite(e.fxAcc) + dt * rate * q;
+      while (e.fxAcc >= 1) {
+        e.fxAcc -= 1;
+        if (e.type === 'red_shell') {
+          // Luciole: warm firefly glow with a blinking halo
+          add.spawn(p.x + rand(-0.2, 0.2), p.y + 0.5 + rand(-0.2, 0.2), p.z + rand(-0.2, 0.2), -vx * 0.05 + rand(-0.6, 0.6), rand(0.2, 1.2), -vz * 0.05 + rand(-0.6, 0.6),
+            rand(0.35, 0.6), rand(0.35, 0.6), 0.05, C.fireflyCore, C.firefly, 0.95, -0.4, 2, Math.random() < 0.3 ? 1 : 0, rand(-3, 3));
+          if (Math.random() < 0.25) add.spawn(p.x, p.y + 0.5, p.z, vx * 0.6, 0, vz * 0.6, 0.12, 2.6, 1.6, C.fireflyCore, C.firefly, 0.5, 0, 0, 0);
+        } else if (e.type === 'blue_shell') {
+          // Étoile filante: starry trail (sparkle stars, sky blue -> violet)
+          add.spawn(p.x + rand(-0.4, 0.4), p.y + rand(-0.3, 0.3), p.z + rand(-0.4, 0.4), rand(-1, 1), rand(-1.5, 0.3), rand(-1, 1),
+            rand(0.6, 1.1), rand(0.6, 1.0), 0.05, Math.random() < 0.4 ? C.white : C.sky, C.comet, 1, 1.5, 1, 1, rand(-4, 4));
+        } else if (e.type === 'green_shell') {
+          // Graine: a little mint seed dust
+          add.spawn(p.x, p.y + 0.3, p.z, rand(-0.5, 0.5), rand(0.3, 1), rand(-0.5, 0.5), rand(0.25, 0.4), 0.35, 0.05, C.mint, C.seed, 0.7, 0, 2, 0);
+        } else {
+          // Fleur solaire: drifting petals and pollen
+          this.chunks.spawn(p.x, p.y + 0.6, p.z, rand(-1.5, 1.5), rand(0.5, 2), rand(-1.5, 1.5), rand(0.8, 1.3), 0.16, 0.02, 0.1,
+            Math.random() < 0.6 ? C.petal : C.petal2, 3, 1.5, p.y, rand(1, 2));
+          add.spawn(p.x, p.y + 0.8, p.z, rand(-0.5, 0.5), rand(0.5, 1.5), rand(-0.5, 0.5), 0.5, 0.3, 0.05, C.cream, C.petal, 0.7, 0, 1, 1);
+        }
       }
     }
   }
@@ -825,6 +1008,10 @@ export class Effects {
         case 'miniTurbo': return this._burstMiniTurbo(position, opts);
         case 'shrink': return this._burstShrink(position, opts);
         case 'smoke': return this._burstSmoke(position, opts);
+        case 'petals': return this._burstPetals(position, opts);
+        case 'leaves': return this._burstLeaves(position, opts);
+        case 'lightMotes': return this._burstMotes(position, opts);
+        case 'voidFall': return this._burstVoid(position, opts);
         default: return undefined;
       }
     } catch (err) {
@@ -836,8 +1023,9 @@ export class Effects {
   _burstItemBox(p) {
     const C = this.C;
     // bright flash
-    this.add.spawn(p.x, p.y, p.z, 0, 0, 0, 0.22, 3.5, 6, C.white, C.white, 0.9, 0, 0, 0);
-    for (let i = 0; i < 22; i++) {
+    this.add.spawn(p.x, p.y, p.z, 0, 0, 0, 0.22, 3.5, 6, C.white, C.cream, 0.9, 0, 0, 0);
+    const nShard = this._n(22), nGlow = this._n(36);
+    for (let i = 0; i < nShard; i++) {
       const col = this.rainbow[i % this.rainbow.length];
       const a = Math.random() * Math.PI * 2, e = rand(-0.3, 1);
       const sp = rand(5, 11);
@@ -845,7 +1033,7 @@ export class Effects {
       this.chunks.spawn(p.x, p.y, p.z, Math.cos(a) * sp, e * sp * 0.8 + 4, Math.sin(a) * sp,
         rand(0.6, 1.0), s, s, s * 0.35, col, 24, 0.8, p.y - 1.2);
     }
-    for (let i = 0; i < 36; i++) {
+    for (let i = 0; i < nGlow; i++) {
       const col = this.rainbow[(Math.random() * this.rainbow.length) | 0];
       _c2.copy(col).lerp(C.white, 0.5);
       const a = Math.random() * Math.PI * 2, u = rand(-1, 1), sp = rand(3, 9);
@@ -861,49 +1049,125 @@ export class Effects {
     const radius = finite(opts.radius, 3);
     const s = Math.max(0.4, radius / 3);
     const small = opts.kind === 'small' || radius < 2;
-    // fireball
-    this._fireball(p.x, p.y + radius * 0.35, p.z, radius * (small ? 0.8 : 0.6), small ? 0.45 : 0.9);
-    if (!small) this._fireball(p.x + rand(-1, 1) * s, p.y + 1.6 * s, p.z + rand(-1, 1) * s, radius * 0.45, 0.75);
+    const star = opts.kind === 'blue_shell' || opts.kind === 'blue_shell_defused';
+    const bomb = opts.kind === 'bomb';
+    const set = star ? this.fireSets.star : small ? this.fireSets.soft : this.fireSets.warm;
+    // soft bloom ball (sun-bloom for the sunflower, starlight for the shooting star)
+    this._fireball(p.x, p.y + radius * 0.35, p.z, radius * (small ? 0.8 : 0.6), small ? 0.45 : 0.9, set);
+    if (!small) this._fireball(p.x + rand(-1, 1) * s, p.y + 1.6 * s, p.z + rand(-1, 1) * s, radius * 0.45, 0.75, set);
     // flash
-    this.add.spawn(p.x, p.y + 1, p.z, 0, 0, 0, 0.2, radius * 1.8, radius * 2.6, C.flameCore, C.orange, 0.75, 0, 0, 0);
-    // sparks
-    const nSparks = Math.round(small ? 18 : 45 * Math.min(2, s));
+    this.add.spawn(p.x, p.y + 1, p.z, 0, 0, 0, 0.2, radius * 1.8, radius * 2.6, C.white, star ? C.sky : C.dawn, 0.75, 0, 0, 0);
+    // sparkles
+    const nSparks = this._n(small ? 18 : 45 * Math.min(2, s));
+    const sc0 = star ? C.white : C.spark, sc1 = star ? C.comet : C.sparkEnd;
     for (let i = 0; i < nSparks; i++) {
       const a = Math.random() * Math.PI * 2, u = rand(-0.2, 1), sp = rand(8, 20) * Math.sqrt(s);
       const r = Math.sqrt(1 - u * u);
       this.add.spawn(p.x, p.y + 0.5, p.z, Math.cos(a) * r * sp, u * sp + 3, Math.sin(a) * r * sp,
-        rand(0.4, 0.9), rand(0.3, 0.55), 0.05, C.spark, C.sparkEnd, 1, 22, 1.2, 0);
+        rand(0.4, 0.9), rand(0.3, 0.55), 0.05, sc0, sc1, 1, 22, 1.2, star || Math.random() < 0.3 ? 1 : 0, rand(-4, 4));
     }
-    // smoke
-    const nSmoke = Math.round(small ? 7 : 16 * Math.min(2, s));
+    // soft lavender/cream puffs (never black smoke)
+    const nSmoke = this._n(small ? 6 : 14 * Math.min(2, s));
     for (let i = 0; i < nSmoke; i++) {
       const a = Math.random() * Math.PI * 2, sp = rand(1, 4) * s;
       this.smoke.spawn(p.x + Math.cos(a) * s * 0.8, p.y + rand(0.5, 2) * s, p.z + Math.sin(a) * s * 0.8,
         Math.cos(a) * sp, rand(2, 5) * Math.sqrt(s), Math.sin(a) * sp,
-        rand(1.0, 1.8), rand(1.5, 2.5) * s, rand(4, 6) * s, C.smokeDark, C.smokeDarker, 0.7, -1.5, 1.2, 0, rand(-1, 1));
+        rand(0.9, 1.5), rand(1.5, 2.5) * s, rand(4, 6) * s, C.smokeLight, C.smokeDark, 0.5, -1.5, 1.2, 0, rand(-1, 1));
     }
-    // debris
-    const nDebris = small ? 6 : Math.round(14 * Math.min(2, s));
-    for (let i = 0; i < nDebris; i++) {
-      const a = Math.random() * Math.PI * 2, sp = rand(5, 12) * Math.sqrt(s);
-      const sz = rand(0.15, 0.35) * Math.sqrt(s);
-      this.chunks.spawn(p.x, p.y + 0.6, p.z, Math.cos(a) * sp, rand(6, 13), Math.sin(a) * sp,
-        rand(1, 1.6), sz, sz, sz, Math.random() < 0.4 ? C.orange : C.debris, 30, 0.3, p.y);
+    if (bomb) this._burstPetals(p, { count: 70 * Math.min(1.6, s), speed: 7 * Math.sqrt(s), sunflower: true });
+    else if (!small) {
+      const nDebris = this._n(Math.round(12 * Math.min(2, s)));
+      for (let i = 0; i < nDebris; i++) {
+        const a = Math.random() * Math.PI * 2, sp = rand(5, 12) * Math.sqrt(s);
+        const sz = rand(0.15, 0.3) * Math.sqrt(s);
+        this.chunks.spawn(p.x, p.y + 0.6, p.z, Math.cos(a) * sp, rand(6, 13), Math.sin(a) * sp,
+          rand(1, 1.6), sz, sz, sz, star ? (Math.random() < 0.5 ? C.sky : C.comet) : (Math.random() < 0.5 ? C.dawn : C.debris), 30, 0.3, p.y);
+      }
     }
-    // shockwave
-    this._ring(p, 0.15, null, 0.5 * s, radius * 1.7, small ? 0.35 : 0.55, C.flameCore, 1, 'ground', 0.25);
-    if (!small) this._ring(p, 0.3, null, 0.5 * s, radius * 1.2, 0.45, C.white, 0.7, 'ground', 0.15);
+    // shockwave rings
+    this._ring(p, 0.15, null, 0.5 * s, radius * 1.7, small ? 0.35 : 0.55, star ? C.sky : C.dawn, 1, 'ground', 0.25);
+    if (!small) this._ring(p, 0.3, null, 0.5 * s, radius * 1.2, 0.45, star ? C.comet : C.white, 0.7, 'ground', 0.15);
+  }
+
+  /** Sunflower / blossom petals: flat fluttering chunks + pollen sparkles. */
+  _burstPetals(p, opts = {}) {
+    const C = this.C;
+    const n = this._n(finite(opts.count, 24));
+    const sp0 = finite(opts.speed, 6);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, sp = rand(0.4, 1) * sp0;
+      const col = opts.sunflower ? (Math.random() < 0.65 ? C.petal : Math.random() < 0.7 ? C.petal2 : C.petalHeart)
+        : (Math.random() < 0.5 ? C.dawn : Math.random() < 0.5 ? C.flameEnd : C.cream);
+      this.chunks.spawn(p.x + rand(-0.5, 0.5), p.y + rand(0.6, 1.4), p.z + rand(-0.5, 0.5), Math.cos(a) * sp, rand(4, 9), Math.sin(a) * sp,
+        rand(1.4, 2.4), rand(0.13, 0.2), 0.015, rand(0.07, 0.1), col, 8, 1.8, p.y - 0.4, rand(1, 3));
+    }
+    const ng = this._n(Math.round(n * 0.5));
+    for (let i = 0; i < ng; i++) {
+      const a = Math.random() * Math.PI * 2, sp = rand(2, 6);
+      this.add.spawn(p.x, p.y + 1, p.z, Math.cos(a) * sp, rand(1, 5), Math.sin(a) * sp, rand(0.4, 0.8), rand(0.3, 0.5), 0.05, C.cream, C.gold, 0.9, 2, 1.5, 1, rand(-3, 3));
+    }
+  }
+
+  /** Leaf flecks (soft mint/teal), e.g. when an item lands or a kart ploughs a bush. */
+  _burstLeaves(p, opts = {}) {
+    const C = this.C;
+    const n = this._n(finite(opts.count, 14));
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, sp = rand(2, 6);
+      const col = Math.random() < 0.4 ? C.leaf : Math.random() < 0.5 ? C.grass1 : C.mint;
+      this.chunks.spawn(p.x, p.y + rand(0.6, 1.4), p.z, Math.cos(a) * sp, rand(3, 7), Math.sin(a) * sp,
+        rand(1.0, 1.8), rand(0.12, 0.18), 0.015, rand(0.07, 0.1), col, 9, 1.6, p.y - 0.4, rand(1, 2.5));
+    }
+  }
+
+  /**
+   * Falling into the Night's starry void: a swirl of star sparkles and lavender motes sucked downward, a faint
+   * indigo/violet ring where the kart vanished. No water, no smoke.
+   */
+  _burstVoid(p, opts = {}) {
+    const C = this.C;
+    const s = finite(opts.scale, 1);
+    const n = this._n(Math.round(46 * s));
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, r = rand(0.3, 2.2) * s;
+      // tangential swirl + downward pull (negative gravity sign = falls faster)
+      const tx = -Math.sin(a) * rand(2, 5), tz = Math.cos(a) * rand(2, 5);
+      this.add.spawn(p.x + Math.cos(a) * r, p.y + rand(0, 1.5), p.z + Math.sin(a) * r, tx, rand(-1, 2.5), tz,
+        rand(0.6, 1.2), rand(0.35, 0.7) * s, 0.05, Math.random() < 0.5 ? C.white : C.sky, Math.random() < 0.5 ? C.comet : C.cometDeep,
+        1, 6, 1.2, Math.random() < 0.6 ? 1 : 0, rand(-4, 4));
+    }
+    const nm = this._n(Math.round(14 * s));
+    for (let i = 0; i < nm; i++) {
+      const a = Math.random() * Math.PI * 2;
+      this.add.spawn(p.x + Math.cos(a) * 0.8, p.y + 0.5, p.z + Math.sin(a) * 0.8, Math.cos(a) * 1.5, rand(0.5, 2), Math.sin(a) * 1.5,
+        rand(0.9, 1.5), rand(0.6, 1.0) * s, 0.1, C.comet, C.cometDeep, 0.5, -0.5, 1, 0);
+    }
+    this.add.spawn(p.x, p.y + 0.6, p.z, 0, 0, 0, 0.25, 3 * s, 0.4, C.white, C.comet, 0.8, 0, 0, 1);
+    this._ring(p, 0, null, 0.3, 3.4 * s, 0.6, C.comet, 0.75, 'ground', 0.25);
+    this._ring(p, 0.12, null, 0.3, 2.2 * s, 0.5, C.sky, 0.6, 'ground', 0.2);
+  }
+
+  /** Soft floating light particles (LUMEN's glow motes). */
+  _burstMotes(p, opts = {}) {
+    const C = this.C;
+    const n = this._n(finite(opts.count, 16));
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, r = rand(0.5, 2.5);
+      this.add.spawn(p.x + Math.cos(a) * r, p.y + rand(0.3, 2), p.z + Math.sin(a) * r, rand(-0.5, 0.5), rand(0.5, 1.6), rand(-0.5, 0.5),
+        rand(0.8, 1.6), rand(0.3, 0.6), 0.05, C.cream, Math.random() < 0.5 ? C.mint : C.gold, 0.7, -0.3, 1, Math.random() < 0.3 ? 1 : 0);
+    }
   }
 
   _burstConfetti(p) {
-    for (let i = 0; i < 200; i++) {
+    const nc = this._n(200), ng = this._n(60);
+    for (let i = 0; i < nc; i++) {
       const col = this.rainbow[i % this.rainbow.length];
       const a = Math.random() * Math.PI * 2, sp = rand(2, 9);
       this.chunks.spawn(p.x + rand(-2, 2), p.y + rand(1, 3), p.z + rand(-2, 2),
         Math.cos(a) * sp, rand(9, 20), Math.sin(a) * sp,
         rand(3, 5), rand(0.18, 0.28), 0.02, rand(0.1, 0.16), col, 9, 2.4, p.y - 0.5, rand(1, 3));
     }
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < ng; i++) {
       const col = this.rainbow[(Math.random() * this.rainbow.length) | 0];
       this.add.spawn(p.x + rand(-3, 3), p.y + rand(1, 5), p.z + rand(-3, 3), rand(-2, 2), rand(1, 5), rand(-2, 2),
         rand(0.6, 1.4), rand(0.5, 0.9), 0.05, this.C.white, col, 1, 1, 1, 1, rand(-3, 3));
@@ -918,12 +1182,13 @@ export class Effects {
       if (!slot) slot = this.starSlots.reduce((a, b) => (a.t / a.dur > b.t / b.dur ? a : b));
       slot.kart = k; slot.t = 0; slot.dur = opts.kind === 'spin' ? 1.4 : 1.8; slot.active = true;
     }
-    for (let i = 0; i < 18; i++) {
+    const nh = this._n(18);
+    for (let i = 0; i < nh; i++) {
       const a = Math.random() * Math.PI * 2, sp = rand(4, 9);
       this.add.spawn(p.x, p.y + 1, p.z, Math.cos(a) * sp, rand(2, 7), Math.sin(a) * sp,
-        rand(0.3, 0.55), rand(0.35, 0.6), 0.05, C.white, C.yellow, 1, 14, 1.5, 1, rand(-4, 4));
+        rand(0.3, 0.55), rand(0.35, 0.6), 0.05, C.white, C.starGold, 1, 14, 1.5, 1, rand(-4, 4));
     }
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < this._n(5); i++) {
       this.smoke.spawn(p.x + rand(-0.8, 0.8), p.y + 0.5, p.z + rand(-0.8, 0.8), rand(-1.5, 1.5), rand(1, 2.5), rand(-1.5, 1.5),
         0.7, 1, 2.4, C.smokeLight, C.smokeGrey, 0.5, -0.5, 2, 0, rand(-1, 1));
     }
@@ -951,18 +1216,21 @@ export class Effects {
   }
 
   _burstCoin(p) {
+    // Note de musique: golden chime sparkles rising like a melody
     const C = this.C;
-    for (let i = 0; i < 14; i++) {
+    const n = this._n(14);
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2, sp = rand(2, 5);
-      this.add.spawn(p.x, p.y, p.z, Math.cos(a) * sp, rand(2, 6), Math.sin(a) * sp, rand(0.25, 0.45), rand(0.35, 0.55), 0.05, C.white, C.yellow, 1, 10, 1.5, Math.random() < 0.5 ? 1 : 0);
+      this.add.spawn(p.x, p.y, p.z, Math.cos(a) * sp, rand(2, 6), Math.sin(a) * sp, rand(0.25, 0.45), rand(0.35, 0.55), 0.05, C.cream, C.gold, 1, 10, 1.5, Math.random() < 0.5 ? 1 : 0);
     }
-    this.add.spawn(p.x, p.y, p.z, 0, 0, 0, 0.12, 2.2, 0.5, C.white, C.yellow, 0.9, 0, 0, 0);
+    for (let i = 0; i < this._n(4); i++) this.add.spawn(p.x + rand(-0.4, 0.4), p.y + 0.3, p.z + rand(-0.4, 0.4), 0, rand(2.5, 4), 0, 0.6, 0.5, 0.2, C.white, C.mint, 0.9, 0, 2, 1, 0);
+    this.add.spawn(p.x, p.y, p.z, 0, 0, 0, 0.12, 2.2, 0.5, C.white, C.gold, 0.9, 0, 0, 0);
   }
 
   _burstSplash(p, opts) {
     const C = this.C;
     const s = finite(opts.scale, 1);
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0, n = this._n(40); i < n; i++) {
       const a = Math.random() * Math.PI * 2, sp = rand(2, 6) * s;
       this.add.spawn(p.x, p.y + 0.2, p.z, Math.cos(a) * sp, rand(5, 11) * s, Math.sin(a) * sp,
         rand(0.5, 0.9), rand(0.25, 0.45) * s, 0.1, C.water, C.waterEnd, 0.8, 24, 0.5, 0);
@@ -981,8 +1249,9 @@ export class Effects {
     const offroad = k?.surface === 'offroad';
     const col0 = offroad ? C.dust : C.smokeLight, col1 = offroad ? C.dustEnd : C.smokeGrey;
     const scl = finite(k?.object3D?.scale?.x, 1);
-    for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * Math.PI * 2 + rand(-0.2, 0.2), sp = rand(4, 7);
+    const nl = this._n(16);
+    for (let i = 0; i < nl; i++) {
+      const a = (i / nl) * Math.PI * 2 + rand(-0.2, 0.2), sp = rand(4, 7);
       this.smoke.spawn(p.x + Math.cos(a) * 0.8, p.y + 0.15, p.z + Math.sin(a) * 0.8, Math.cos(a) * sp, rand(0.3, 1.2), Math.sin(a) * sp,
         rand(0.45, 0.75), 0.6 * scl, 2.2 * scl, col0, col1, 0.55, 0, 3.5, 0, rand(-1, 1));
     }
@@ -993,7 +1262,7 @@ export class Effects {
     let inten = finite(opts.intensity, 0.5);
     if (inten > 2) inten /= 20;
     inten = Math.max(0.15, Math.min(1, inten));
-    const n = Math.round((opts.small ? 6 : 10) + inten * (opts.small ? 14 : 28));
+    const n = this._n(Math.round((opts.small ? 6 : 10) + inten * (opts.small ? 14 : 28)));
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2, u = rand(0, 1), sp = rand(5, 13);
       const r = Math.sqrt(1 - u * u);
@@ -1016,7 +1285,7 @@ export class Effects {
     }
     this.add.spawn(_v.x, _v.y, _v.z, 0, 0, 0, 0.15, 4 + lvl, 2, hot, col, 1, 0, 0, 0);
     const vx = finite(k?.velocity?.x), vz = finite(k?.velocity?.z);
-    for (let i = 0; i < 16 + lvl * 8; i++) {
+    for (let i = 0, n = this._n(16 + lvl * 8); i < n; i++) {
       const a = Math.random() * Math.PI * 2, sp = rand(3, 8);
       this.add.spawn(_v.x, _v.y, _v.z, vx * 0.7 + Math.cos(a) * sp, rand(1, 6), vz * 0.7 + Math.sin(a) * sp,
         rand(0.25, 0.45), rand(0.3, 0.5), 0.05, hot, col, 1, 12, 2, Math.random() < 0.5 ? 1 : 0);
@@ -1024,10 +1293,12 @@ export class Effects {
   }
 
   // ------------------------------------------------------------------ fireballs / rings / stars
-  _fireball(x, y, z, size, dur) {
+  _fireball(x, y, z, size, dur, set = this.fireSets.warm) {
     const f = this.fireballs[this.fireCursor];
     this.fireCursor = (this.fireCursor + 1) % this.fireballs.length;
     f.active = true; f.t = 0; f.dur = dur; f.size = size;
+    const u = f.mat.uniforms;
+    u.uC0.value.copy(set[0]); u.uC1.value.copy(set[1]); u.uC2.value.copy(set[2]);
     f.mesh.position.set(x, y, z);
     f.mesh.visible = true;
     f.mesh.scale.setScalar(0.01);
@@ -1134,11 +1405,18 @@ export class Effects {
     let target = 0;
     if (player) {
       if (finite(player.boostTimer) > 0) target = this._state(player).bigBoost ? 1 : 0.7;
-      if (finite(player.starTimer) > 0) target = Math.max(target, 0.8);
+      if (finite(player.starTimer) > 0) { target = Math.max(target, 0.8); this.streakTint.copy(this.aurora[((this.time * 2) | 0) % this.aurora.length]); }
+      if (finite(player.rocketTimer) > 0) target = 1;
+      target = Math.max(target, this.streakKick);
       if (Math.abs(finite(player.speed)) < 8) target *= 0.3;
     }
-    const rate = target > this.streakIntensity ? 6 : 2.5;
+    this.streakKick = Math.max(0, this.streakKick - dt * 2.5);
+    let reduce = false;
+    try { reduce = typeof window !== 'undefined' && !!window.__lumenReduceMotion; } catch (_) { reduce = false; }
+    if (!this.speedLines || reduce) target = 0;
+    const rate = target > this.streakIntensity ? 8 : 2.5;
     this.streakIntensity += (target - this.streakIntensity) * Math.min(1, dt * rate);
+    this.streakMat.uniforms.uColor.value.copy(this.streakTint);
     const cam = this.camera;
     if (this.streakIntensity < 0.01 || !cam?.isPerspectiveCamera) { this.streakMesh.visible = false; return; }
     this.streakMesh.visible = true;
@@ -1146,7 +1424,7 @@ export class Effects {
     const aspect = finite(cam.aspect, 1.6);
     const P = this.streakPos, A = this.streakAlpha;
     const I = this.streakIntensity;
-    for (let i = 0; i < this.streaks.length; i++) {
+    for (let i = 0; i < this.streakCount; i++) {
       const s = this.streaks[i];
       s.d -= s.spd * dt * (0.6 + I * 0.6);
       if (s.d < 1.0) this._resetStreak(s, false);

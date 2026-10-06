@@ -1,0 +1,3 @@
+/* Home screen name and iOS permission text — English. */
+"CFBundleDisplayName" = "Lumen Kart";
+"NSMotionUsageDescription" = "Lumen Kart uses your device's motion sensors only for optional tilt steering. Nothing is recorded or shared.";

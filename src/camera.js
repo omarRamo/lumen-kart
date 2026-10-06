@@ -1,4 +1,13 @@
-// Agent 4 — Camera: spring-damped chase camera with drift swing, speed FOV, shake and cinematic modes.
+// Chase camera: spring-damped follow tuned for phones in landscape. Look-ahead into corners, drift swing,
+// boost FOV kick, hit punch, timed shake and cinematic intro/finish modes.
+//
+// Public API (UI / other systems):
+//   update(dt, kart, { lookBack, mode })   mode: 'race' | 'countdown' | 'finish' | 'intro'
+//   snap(kart)                              hard reset behind the kart
+//   shake(intensity 0..1, duration s)       timed shake (e.g. UI explosions); scaled by shakeScale
+//   punch(strength = 1)                     quick zoom-in "punch" (item hits, big landings)
+//   addShake(amount)                        legacy decaying shake impulse
+//   shakeScale                              0..1 settings multiplier ("reduce motion" -> 0); also window.__lumenShakeScale
 import * as THREE from 'three';
 import { bus } from './events.js';
 import { PHYSICS } from './config.js';
@@ -12,6 +21,8 @@ const smoothstep = (t) => t * t * (3 - 2 * t);
 const lerp = (a, b, t) => a + (b - a) * t;
 
 const INTRO_TIME = 4.0;
+const MAX_HFOV = 104;       // landscape phones (19.5:9) would otherwise get a fish-eye horizontal FOV
+const BASE_VFOV = 70;
 
 export class ChaseCamera {
   constructor(camera) {
@@ -19,12 +30,14 @@ export class ChaseCamera {
     this.target = null;
 
     // tuning
-    this.baseFov = 70;
-    this.maxFov = 84;
-    this.distance = 6.5;
-    this.height = 2.6;
+    this.baseFov = BASE_VFOV;
+    this.maxFov = 86;
+    this.distance = 6.1;
+    this.height = 2.45;
     this.lookAhead = 3.0;
     this.lookHeight = 0.55;
+    this.cornerLook = 1.6;    // metres the look target slides into a turn at full lock & speed
+    this.shakeScale = 1;
 
     // state
     this.yaw = 0;
@@ -34,8 +47,14 @@ export class ChaseCamera {
     this.camY = 0;
     this.fov = this.baseFov;
     this.roll = 0;
-    this.shake = 0;
+    this.shakeAmt = 0;        // decaying impulse shake
     this.shakeTime = 0;
+    this._timed = { amp: 0, t: 0, dur: 0 };
+    this._punch = 0;          // 0..1, decays quickly
+    this._punchVel = 0;
+    this._fovKick = 0;        // extra degrees on boost, springs back
+    this._turn = 0;           // smoothed steering for corner look-ahead
+    this._side = 0;           // lateral camera offset (drift swing)
     this.mode = null;
     this.modeTime = 0;
     this.modeYaw = 0;
@@ -50,10 +69,29 @@ export class ChaseCamera {
 
     const isTarget = (d) => d && this.target && d.kart === this.target;
     this._unsubs = [
-      bus.on('kart:hit', (d) => { if (isTarget(d)) this.addShake(d.kind === 'tumble' ? 0.75 : 0.5); }),
-      bus.on('kart:wallBump', (d) => { if (isTarget(d)) this.addShake(0.12 + 0.45 * clamp(fin(d.intensity, 0.3), 0, 1)); }),
-      bus.on('kart:land', (d) => { if (isTarget(d)) this.addShake(clamp(0.05 + fin(d.airTime, 0) * 0.15, 0, 0.25)); }),
-      bus.on('kart:boost', (d) => { if (isTarget(d) && d.source !== 'star') this.addShake(0.08); }),
+      bus.on('kart:hit', (d) => {
+        if (!isTarget(d)) return;
+        this.addShake(d.kind === 'tumble' ? 0.75 : 0.5);
+        this.punch(d.kind === 'tumble' ? 1 : 0.7);
+      }),
+      bus.on('item:hit', (d) => {
+        // satisfying confirmation when *we* land a hit on someone else
+        if (d && this.target && d.by === this.target && d.kart !== this.target) { this.punch(0.35); this.addShake(0.12); }
+      }),
+      bus.on('kart:wallBump', (d) => { if (isTarget(d)) this.addShake((d.glancing ? 0.05 : 0.12) + 0.4 * clamp(fin(d.intensity, 0.3), 0, 1)); }),
+      bus.on('kart:land', (d) => {
+        if (!isTarget(d)) return;
+        this.addShake(clamp(0.05 + fin(d.airTime, 0) * 0.15, 0, 0.25));
+        if (fin(d.intensity, 0) > 0.55) this.punch(0.25);
+      }),
+      bus.on('kart:boost', (d) => {
+        if (!isTarget(d) || d.source === 'coin') return;
+        const s = clamp(fin(d.strength, 1), 0, 1.2);
+        const big = d.source === 'mushroom' || d.source === 'pad' || d.source === 'start' || d.source === 'rocket';
+        this._fovKick = Math.max(this._fovKick, (big ? 7 : 4.5) * s);
+        if (d.source !== 'star') this.shake(big ? 0.22 : 0.14, big ? 0.22 : 0.15);
+      }),
+      bus.on('kart:miniTurbo', (d) => { if (isTarget(d)) this._fovKick = Math.max(this._fovKick, 2.5 + 1.5 * clamp(fin(d.level, 1), 1, 3)); }),
       bus.on('kart:bump', (d) => { if (d && this.target && (d.a === this.target || d.b === this.target)) this.addShake(0.1 + 0.25 * clamp(fin(d.intensity, 0.3), 0, 1)); }),
       bus.on('item:explode', (d) => {
         const p = d?.position;
@@ -67,8 +105,39 @@ export class ChaseCamera {
     ];
   }
 
+  // ---- public FX API ---------------------------------------------------------------------
   addShake(amount) {
-    this.shake = clamp(Math.max(this.shake, fin(amount, 0)) + fin(amount, 0) * 0.25, 0, 1.2);
+    const a = fin(amount, 0);
+    this.shakeAmt = clamp(Math.max(this.shakeAmt, a) + a * 0.25, 0, 1.2);
+  }
+
+  /** Timed shake: constant-ish amplitude for `duration` seconds, then eased out. */
+  shake(intensity = 0.4, duration = 0.3) {
+    const amp = clamp(fin(intensity, 0.4), 0, 1.5), dur = clamp(fin(duration, 0.3), 0.02, 3);
+    const tm = this._timed;
+    const remaining = tm.dur > 0 ? Math.max(0, tm.dur - tm.t) : 0;
+    if (amp >= tm.amp * (remaining / Math.max(1e-3, tm.dur)) || remaining <= 0) { tm.amp = amp; tm.t = 0; tm.dur = dur; }
+  }
+
+  /** Quick zoom-in punch (hit-stop companion). */
+  punch(strength = 1) {
+    const s = clamp(fin(strength, 1), 0, 1.5);
+    this._punchVel = Math.max(this._punchVel, 14 * s);
+  }
+
+  _shakeMul() {
+    let g = 1;
+    try { if (typeof window !== 'undefined' && Number.isFinite(window.__lumenShakeScale)) g = window.__lumenShakeScale; } catch (_) { g = 1; }
+    return clamp(fin(this.shakeScale, 1), 0, 2) * clamp(g, 0, 2);
+  }
+
+  /** Vertical FOV that keeps the horizontal FOV civil on very wide (landscape phone) screens. */
+  _aspectFov() {
+    const aspect = fin(this.camera?.aspect, 16 / 9);
+    const capV = (2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(MAX_HFOV / 2)) / Math.max(0.5, aspect))) * 180 / PI;
+    // portrait (aspect < 1): widen a little so the road ahead stays visible
+    const portrait = aspect < 1 ? (1 - aspect) * 14 : 0;
+    return clamp(Math.min(this.baseFov, capV) + portrait, 56, 84);
   }
 
   _kartInfo(kart) {
@@ -85,17 +154,24 @@ export class ChaseCamera {
 
   _raceDesired(kart, info, lookBack, speedFrac, boostAmt) {
     const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw);
+    const rx = -fz, rz = fx; // driver's right
     if (lookBack) {
       const d = 6.0;
       this._desired.set(fx * d, 2.1, fz * d);
       this._desiredLook.set(-fx * 4, 0.9, -fz * 4);
       return;
     }
-    const dist = this.distance + speedFrac * 0.7 + boostAmt * 0.8;
+    const aspect = fin(this.camera?.aspect, 16 / 9);
+    const wide = clamp((aspect - 1.78) / 0.5, 0, 1);        // 19.5:9 phones -> slightly lower & closer
+    const portrait = aspect < 1 ? 1 - aspect : 0;
+    const punchIn = this._punch * 0.9;
+    const dist = this.distance + speedFrac * 0.7 + boostAmt * 0.9 - wide * 0.35 + portrait * 2.5 - punchIn;
     const slopeLift = clamp(-this.slope * dist * 0.85, -1.6, 2.4);
-    this._desired.set(-fx * dist, this.height + slopeLift - boostAmt * 0.15, -fz * dist);
+    const side = this._side;
+    this._desired.set(-fx * dist + rx * side, this.height - wide * 0.15 + portrait * 0.8 + slopeLift - boostAmt * 0.15, -fz * dist + rz * side);
     const la = this.lookAhead + speedFrac * 0.8;
-    this._desiredLook.set(fx * la, this.lookHeight + this.slope * la * 0.6, fz * la);
+    const corner = this._turn * this.cornerLook * clamp(speedFrac * 1.2, 0, 1);
+    this._desiredLook.set(fx * la + rx * corner, this.lookHeight + this.slope * la * 0.6, fz * la + rz * corner);
   }
 
   update(dt, kart, opts = {}) {
@@ -117,27 +193,41 @@ export class ChaseCamera {
       this.modeTime += dt;
 
       const speedFrac = clamp(Math.abs(info.speed) / fin(PHYSICS.maxSpeed, 38), 0, 1.4);
-      const boosting = fin(kart.boostTimer, 0) > 0 || fin(kart.starTimer, 0) > 0;
+      const boosting = fin(kart.boostTimer, 0) > 0 || fin(kart.starTimer, 0) > 0 || fin(kart.rocketTimer, 0) > 0;
       this._boost = lerp(this._boost || 0, boosting ? 1 : 0, k(boosting ? 6 : 2.5, dt));
       const boostAmt = this._boost;
+
+      // punch spring (critically damped-ish): velocity impulse -> quick in, smooth out
+      this._punchVel += (-90 * this._punch - 13 * this._punchVel) * dt;
+      this._punch = clamp(this._punch + this._punchVel * dt, -0.3, 1.2);
+      this._fovKick = Math.max(0, this._fovKick - dt * (this._fovKick * 3.2 + 1.5));
 
       // --- yaw follow: lag behind the heading, swing more while drifting so the kart's angle shows
       let targetYaw = info.heading;
       const hs = info.vel ? Math.hypot(fin(info.vel.x), fin(info.vel.z)) : 0;
+      let slip = 0;
       if (hs > 4 && info.vel) {
         const velYaw = Math.atan2(info.vel.x, info.vel.z);
         const diff = wrapAngle(velYaw - info.heading);
-        if (Math.abs(diff) < 1.2 && info.speed > 0) targetYaw = info.heading + diff * (kart.drifting ? 0.55 : 0.3);
+        if (Math.abs(diff) < 1.2 && info.speed > 0) { targetYaw = info.heading + diff * (kart.drifting ? 0.55 : 0.3); slip = diff; }
       }
       const spinning = fin(kart.spinTimer, 0) > 0;
-      const yawRate = spinning ? 1.5 : kart.drifting ? 3.2 : 5.5;
+      const yawRate = spinning ? 1.5 : kart.drifting ? 3.0 : 5.0;
       this.yaw += wrapAngle(targetYaw - this.yaw) * k(yawRate, dt);
+
+      // corner look-ahead from the (smoothed) steering, drift swing pushes the camera to the outside
+      const steer = clamp(fin(kart.steerSmoothed, fin(kart.input?.steer, 0)), -1, 1);
+      const turnTarget = kart.drifting ? fin(kart.driftDir, 0) * 0.8 + steer * 0.2 : steer;
+      this._turn = lerp(this._turn, spinning ? 0 : turnTarget, k(3, dt));
+      const sideTarget = kart.drifting && !spinning ? clamp(-slip * 2.2, -0.9, 0.9) : 0;
+      this._side = lerp(this._side, sideTarget, k(2.5, dt));
 
       if (!kart.airborne) this.slope = lerp(this.slope, info.slope, k(3, dt));
 
       const kp = info.pos;
-      let fovTarget = this.baseFov;
-      let posRate = 10, yRate = kart.airborne ? 3.5 : 9, lookRate = 12;
+      const baseFov = this._aspectFov();
+      let fovTarget = baseFov;
+      let posRate = 9, yRate = kart.airborne ? 3.5 : 8, lookRate = 11;
 
       if (mode === 'intro') {
         const t = smoothstep(clamp(this.modeTime / INTRO_TIME, 0, 1));
@@ -151,7 +241,7 @@ export class ChaseCamera {
         this._desiredLook.set(fx * lerp(8, this.lookAhead, t), lerp(0.5, this.lookHeight, t), fz * lerp(8, this.lookAhead, t));
         this.yaw = baseYaw;
         posRate = 1000; yRate = 1000; lookRate = 1000; // direct (deterministic path)
-        fovTarget = lerp(58, this.baseFov, t);
+        fovTarget = lerp(58, baseFov, t);
       } else if (mode === 'finish') {
         const a = this.modeYaw + PI + this.modeTime * 0.32;
         const r = 7.5 + Math.min(this.modeTime, 4) * 0.4;
@@ -162,7 +252,7 @@ export class ChaseCamera {
       } else {
         this._raceDesired(kart, info, lookBack, speedFrac, boostAmt);
         if (mode === 'countdown') { posRate = 3; yRate = 3; lookRate = 4; }
-        else fovTarget = this.baseFov + speedFrac * 9 + boostAmt * 6;
+        else fovTarget = baseFov + speedFrac * 8 + boostAmt * 6 + this._fovKick - this._punch * 7;
         if (lookBack !== this.lookBack) {
           // instant cut when toggling look-back, like the classics
           this.lookBack = lookBack;
@@ -189,18 +279,29 @@ export class ChaseCamera {
       if (this.camY > kp.y + 18) this.camY = kp.y + 18;
       this.lookOffset.lerp(this._desiredLook, k(lookRate, dt));
 
-      this.fov = lerp(this.fov, clamp(fovTarget, 40, this.maxFov), k(3.5, dt));
+      // FOV: kicks open fast, settles slowly
+      const fovT = clamp(fovTarget, 40, this.maxFov);
+      this.fov = lerp(this.fov, fovT, k(fovT > this.fov ? 7 : 3.5, dt));
 
       // roll into drifts
       const rollTarget = mode === 'race' && !lookBack
-        ? (kart.drifting ? -fin(kart.driftDir, 0) * 0.035 : -fin(kart.steerSmoothed, fin(kart.input?.steer, 0)) * 0.012 * speedFrac)
+        ? (kart.drifting ? -fin(kart.driftDir, 0) * 0.035 : -steer * 0.012 * speedFrac)
         : 0;
       this.roll = lerp(this.roll, rollTarget, k(4, dt));
 
-      // shake
-      this.shake = Math.max(0, this.shake * Math.exp(-4.5 * dt) - 0.02 * dt);
+      // shake: decaying impulse + timed shake, both scaled by the settings multiplier
+      this.shakeAmt = Math.max(0, this.shakeAmt * Math.exp(-4.5 * dt) - 0.02 * dt);
+      const tm = this._timed;
+      let timedAmp = 0;
+      if (tm.dur > 0) {
+        tm.t += dt;
+        const f = tm.t / tm.dur;
+        if (f >= 1) { tm.dur = 0; tm.amp = 0; } else timedAmp = tm.amp * (f < 0.7 ? 1 : (1 - f) / 0.3);
+      }
       this.shakeTime += dt;
-      const s = this.shake * this.shake * 0.45;
+      const mul = this._shakeMul();
+      const amp = Math.max(this.shakeAmt, timedAmp);
+      const s = amp * amp * 0.45 * mul;
       const t = this.shakeTime;
       const sx = (Math.sin(t * 41.3) + Math.sin(t * 27.1 + 1.3) * 0.6) * s;
       const sy = (Math.sin(t * 37.7 + 2.1) + Math.sin(t * 19.4) * 0.6) * s;
@@ -232,15 +333,17 @@ export class ChaseCamera {
     this.yaw = info.heading;
     this.slope = info.slope;
     this._boost = 0;
+    this._punch = 0; this._punchVel = 0; this._fovKick = 0; this._turn = 0; this._side = 0;
+    this._timed.amp = 0; this._timed.dur = 0;
     this.lookBack = false;
     this._raceDesired(kart, info, false, 0, 0);
     this.offset.copy(this._desired);
     this.lookOffset.copy(this._desiredLook);
     this.camY = info.pos.y + this._desired.y;
     this.roll = 0;
-    this.shake = 0;
+    this.shakeAmt = 0;
     this.initialized = true;
-    this.fov = this.baseFov;
+    this.fov = this._aspectFov();
     const cam = this.camera;
     cam.position.set(info.pos.x + this.offset.x, this.camY, info.pos.z + this.offset.z);
     cam.up.set(0, 1, 0);

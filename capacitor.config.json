@@ -1,8 +1,48 @@
 {
-  "appId": "com.turbokartrally.game",
-  "appName": "Turbo Kart Rally",
+  "appId": "com.omartrabelsi.lumenkart",
+  "appName": "Lumen Kart",
   "webDir": "dist",
-  "backgroundColor": "#101827",
-  "ios": { "contentInset": "never", "preferredContentMode": "mobile" },
-  "android": { "backgroundColor": "#101827" }
+  "backgroundColor": "#1f4f4c",
+  "loggingBehavior": "debug",
+  "ios": {
+    "scheme": "App",
+    "contentInset": "never",
+    "scrollEnabled": false,
+    "preferredContentMode": "mobile",
+    "allowsLinkPreview": false,
+    "backgroundColor": "#1f4f4c"
+  },
+  "android": {
+    "backgroundColor": "#1f4f4c",
+    "zoomEnabled": false,
+    "allowMixedContent": false,
+    "captureInput": false,
+    "minWebViewVersion": 90
+  },
+  "server": {
+    "iosScheme": "capacitor",
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover",
+      "hidden": true,
+      "style": "DARK"
+    },
+    "StatusBar": {
+      "overlaysWebView": true,
+      "style": "DARK"
+    },
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "launchAutoHide": true,
+      "launchFadeOutDuration": 300,
+      "backgroundColor": "#1f4f4c",
+      "showSpinner": false,
+      "androidScaleType": "CENTER_CROP",
+      "splashFullScreen": true,
+      "splashImmersive": true
+    }
+  }
 }

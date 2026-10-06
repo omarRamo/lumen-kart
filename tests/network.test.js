@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
-import { createRelay } from '../server/index.js';
+import { createRelay, TRACKS, CHARS } from '../server/index.js';
 
 async function peer(url) {
   const ws=new WebSocket(url);const inbox=[];const pending=[];
@@ -101,4 +101,42 @@ test('relay serves built static assets without exposing parent directories', asy
   const js=await fetch(origin+'/game.js');assert.equal(js.headers.get('content-type'),'text/javascript');
   assert.equal((await fetch(origin+'/%2e%2e%2fpackage.json')).status,404);
   assert.equal((await fetch(origin,{method:'POST'})).status,405);
+});
+
+test('relay accepts every Lumen Kart circuit and pilot id, and rejects unknown ones', async t => {
+  const relay=createRelay({port:0,host:'127.0.0.1'});const address=await relay.listen();t.after(()=>relay.close());
+  const url=`ws://127.0.0.1:${address.port}/ws`;
+  const circuits=['meadow','palm-cove','jungle','sunset-canyon','medina','city','frosty-peaks','lava-keep'];
+  assert.deepEqual([...TRACKS].sort(),[...circuits].sort());
+  assert.deepEqual([...CHARS],['lumen','zina','pip','coralie','rivo','jagu','kibo','nox']);
+  const a=await peer(url);
+  for (const trackId of circuits) {
+    a.send({type:'create',name:'Lumen',character:'lumen',config:{trackId,difficulty:'easy',laps:2}});
+    assert.equal((await a.next('room')).room.config.trackId,trackId);
+    a.send({type:'leave'});await a.next('left');
+  }
+  for (const character of CHARS) {
+    a.send({type:'create',character,config:{trackId:'meadow'}});
+    assert.equal((await a.next('room')).room.players[0].character,character);
+    a.send({type:'leave'});await a.next('left');
+  }
+  a.send({type:'create',character:'mario',config:{trackId:'meadow'}});assert.match((await a.next('error')).message,/Invalid character/);
+  a.send({type:'create',config:{trackId:'alpine-rush'}});assert.match((await a.next('error')).message,/Invalid race/);
+  assert.equal(relay.rooms.size,0);
+});
+
+test('relay serves the PWA manifest and icons with correct types', async t => {
+  const { fileURLToPath } = await import('node:url');
+  const staticDir = fileURLToPath(new URL('../public', import.meta.url));
+  const relay = createRelay({port:0,host:'127.0.0.1',staticDir});
+  const address=await relay.listen();t.after(()=>relay.close());
+  const origin=`http://127.0.0.1:${address.port}`;
+  const manifest=await fetch(origin+'/manifest.webmanifest');
+  assert.equal(manifest.status,200);assert.equal(manifest.headers.get('content-type'),'application/manifest+json');
+  const body=await manifest.json();
+  assert.equal(body.name,'Lumen Kart');assert.equal(body.orientation,'landscape');
+  for (const icon of body.icons) {
+    const response=await fetch(origin+'/'+icon.src);
+    assert.equal(response.status,200,icon.src);assert.equal(response.headers.get('content-type'),icon.type);
+  }
 });

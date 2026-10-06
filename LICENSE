@@ -1,6 +1,7 @@
 MIT License
 
-Copyright (c) 2026 BridgeMind
+Copyright (c) 2026 BridgeMind — Turbo Kart Rally engine (original work)
+Copyright (c) 2026 Omar Trabelsi — Lumen Kart (modifications, additions and adaptation)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +20,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---------------------------------------------------------------------------------
+Scope note: the MIT license above covers the source code. The "Lumen Kart" and
+"LUMEN" names, the character Lumen and the brand artwork (store/brand/ and the app
+icons and splash images generated from it) are not trademarks licensed by this
+file; see NOTICE.md. Third-party components keep their own licenses (NOTICE.md).

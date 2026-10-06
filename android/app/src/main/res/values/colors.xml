@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LUMEN palette: deep teal behind the WebView, so no white flash on launch or resize. -->
+    <color name="lumenkart_background">#1F4F4C</color>
+    <color name="colorPrimary">#387D76</color>
+    <color name="colorPrimaryDark">#1F4F4C</color>
+    <color name="colorAccent">#E98C73</color>
+</resources>

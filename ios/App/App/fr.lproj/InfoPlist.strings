@@ -1,0 +1,3 @@
+/* Nom sur l'écran d'accueil et texte d'autorisation iOS — français. */
+"CFBundleDisplayName" = "Lumen Kart";
+"NSMotionUsageDescription" = "Lumen Kart utilise les capteurs de mouvement de l’appareil uniquement pour la direction par inclinaison (facultative). Rien n’est enregistré ni partagé.";

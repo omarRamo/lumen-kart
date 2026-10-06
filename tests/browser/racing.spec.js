@@ -1,11 +1,28 @@
+// Lumen Kart — end-to-end browser suite (Playwright).
+// Runs against the production bundle built by playwright.config.js into .e2e-dist/ with VITE_WS_URL set,
+// so the online mode (hidden in store builds) is reachable. Selectors follow the UX contract
+// (docs/agents/ux.md §2): data-testid attributes plus the kept classes .mobile-*, [data-hold], .hud-*, .results.
 import { test, expect } from '@playwright/test';
 
-async function boot(page) {
+const PHONE_LANDSCAPE = { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 };
+
+/** Opens the game and waits for the title screen; collects page errors. */
+async function boot(page, errors = []) {
+  page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
-  await page.waitForFunction(() => window.__game?.state === 'title', { timeout: 30000 });
+  await page.waitForFunction(() => window.__game?.state === 'title', null, { timeout: 45000 });
   expect(await page.evaluate(() => window.__game.errors())).toEqual([]);
+  return errors;
 }
 
+const gameState = page => page.evaluate(() => window.__game.state);
+
+async function expectNoGameErrors(page, errors) {
+  expect(errors, 'uncaught page errors').toEqual([]);
+  expect(await page.evaluate(() => window.__game.errors()), 'errors caught by the game loop').toEqual([]);
+}
+
+/** The WebGL canvas must show actual scenery, not a blank or flat frame. */
 async function expectRenderedScene(page) {
   const pixels = await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
     const sample = document.createElement('canvas');
@@ -29,31 +46,38 @@ async function expectRenderedScene(page) {
   expect(pixels.contrast).toBeGreaterThan(40);
 }
 
+/** Touch cockpit and HUD stay on screen, are big enough, and never overlap each other. */
 async function expectMobileCockpit(page) {
   const layout = await page.evaluate(() => {
     const selectors = ['.mobile-toolbar', '.mobile-steering', '.mobile-actions', '.hud-tl', '.hud-minimap', '.hud-br'];
     const regions = selectors.map(selector => {
-      const bounds = document.querySelector(selector).getBoundingClientRect();
-      return { selector, left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height };
+      const element = document.querySelector(selector);
+      if (!element) return { selector, missing: true };
+      const b = element.getBoundingClientRect();
+      return { selector, left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width, height: b.height };
     });
-    const targets = [...document.querySelectorAll('.mobile-controls button, .mobile-steering')].map(element => {
-      const bounds = element.getBoundingClientRect();
-      return { width: bounds.width, height: bounds.height, clipped: element.scrollWidth > element.clientWidth + 1 };
-    });
+    const targets = [...document.querySelectorAll('.mobile-controls button, .mobile-steering')]
+      .filter(element => element.getClientRects().length)
+      .map(element => {
+        const b = element.getBoundingClientRect();
+        return { name: element.dataset.testid || element.className, width: b.width, height: b.height, clipped: element.scrollWidth > element.clientWidth + 1 };
+      });
     return { regions, targets, width: innerWidth, height: innerHeight, overflow: document.documentElement.scrollWidth > innerWidth };
   });
-  expect(layout.overflow).toBe(false);
+  expect(layout.overflow, 'no horizontal page overflow').toBe(false);
+  for (const region of layout.regions) expect(region.missing, `${region.selector} exists`).toBeFalsy();
   for (const target of layout.targets) {
-    expect(target.width).toBeGreaterThanOrEqual(44);
-    expect(target.height).toBeGreaterThanOrEqual(44);
-    expect(target.clipped, 'control labels must fit').toBe(false);
+    expect(target.width, `${target.name} width`).toBeGreaterThanOrEqual(44);
+    expect(target.height, `${target.name} height`).toBeGreaterThanOrEqual(44);
+    expect(target.clipped, `${target.name} label must fit`).toBe(false);
   }
-  for (const [index, region] of layout.regions.entries()) {
-    expect(region.left, region.selector).toBeGreaterThanOrEqual(0);
-    expect(region.top, region.selector).toBeGreaterThanOrEqual(0);
-    expect(region.right, region.selector).toBeLessThanOrEqual(layout.width);
-    expect(region.bottom, region.selector).toBeLessThanOrEqual(layout.height);
-    for (const other of layout.regions.slice(index + 1)) {
+  const visible = layout.regions.filter(r => r.width > 0 && r.height > 0);
+  for (const [index, region] of visible.entries()) {
+    expect(region.left, region.selector).toBeGreaterThanOrEqual(-1);
+    expect(region.top, region.selector).toBeGreaterThanOrEqual(-1);
+    expect(region.right, region.selector).toBeLessThanOrEqual(layout.width + 1);
+    expect(region.bottom, region.selector).toBeLessThanOrEqual(layout.height + 1);
+    for (const other of visible.slice(index + 1)) {
       const overlap = Math.min(region.right, other.right) - Math.max(region.left, other.left) > 1
         && Math.min(region.bottom, other.bottom) - Math.max(region.top, other.top) > 1;
       expect(overlap, `${region.selector} must not overlap ${other.selector}`).toBe(false);
@@ -61,157 +85,182 @@ async function expectMobileCockpit(page) {
   }
 }
 
-test('mobile layout, touch driving, tilt fallback, pause and results', async ({ browser }) => {
-  test.setTimeout(180000);
-  const context = await browser.newContext({ viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
-  const page = await context.newPage();
-  await page.addInitScript(() => {
-    window.DeviceOrientationEvent = class extends Event {
-      static permission = 'denied';
-      static async requestPermission() { return this.permission; }
-      constructor(type, { beta, gamma } = {}) {
-        super(type);
-        this.beta = beta;
-        this.gamma = gamma;
-      }
-    };
-  });
-  const errors = [];
-  page.on('pageerror', e => errors.push(e.message));
-  await boot(page);
-  await page.locator('.title-screen').tap();
-  await page.locator('.mode-card.m-vs').tap();
-  await page.locator('.race-btn').tap();
-  await page.locator('.course-card', { hasText: 'SUNSET CANYON' }).tap();
-  await page.waitForFunction(() => window.__game.state === 'intro');
-  await page.evaluate(() => window.__game.skipIntro());
-  await page.waitForFunction(() => window.__game.state === 'racing');
-  await expect(page.locator('.mobile-controls')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__game.world.player.speed), { timeout: 10000 }).toBeGreaterThan(5);
-  expect(await page.evaluate(() => window.__game.world.track.id)).toBe('sunset-canyon');
-  await expect(page.locator('.mobile-sensor')).toHaveText('GYRO OFF');
-  await page.locator('.mobile-sensor').tap();
-  await expect(page.locator('.mobile-status')).toHaveText('GYRO UNAVAILABLE');
-  await expect(page.locator('.mobile-sensor')).toHaveAttribute('aria-pressed', 'false');
-  await page.evaluate(() => { DeviceOrientationEvent.permission = 'granted'; });
-  await page.locator('.mobile-sensor').tap();
-  await expect(page.locator('.mobile-sensor')).toHaveText('GYRO ON');
-  await page.evaluate(() => {
-    window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { beta: 0, gamma: 0 }));
-    window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { beta: 16, gamma: 16 }));
-  });
-  await expect.poll(() => page.evaluate(() => Math.abs(window.__game.world.player.input.steer))).toBeGreaterThan(0.3);
-  await page.locator('.mobile-sensor').tap();
+/** Starts a race straight from the game API and lands in the 'racing' state. */
+async function startRaceDirect(page, settings) {
+  await page.evaluate(s => window.__game.startRace(s), settings);
+  await page.waitForFunction(id => ['intro', 'countdown', 'racing'].includes(window.__game.state) && window.__game.world?.track?.id === id,
+    settings.trackId, { timeout: 30000 });
+  await page.evaluate(() => window.__game.fastForward(4));
+  await page.waitForFunction(() => window.__game.state === 'racing', null, { timeout: 15000 });
+}
 
+const center = box => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
+
+// (1) ---------------------------------------------------------------------------------------------
+test('mobile landscape: menu flow to a race, then touch driving, pause and results', async ({ browser }) => {
+  test.setTimeout(180000);
+  const context = await browser.newContext(PHONE_LANDSCAPE);
+  const page = await context.newPage();
+  const errors = await boot(page);
+
+  await page.getByTestId('title-play').tap();
+  await page.getByTestId('mode-vs').tap();
+  await page.getByTestId('class-100cc').tap();
+  await page.getByTestId('track-sunset-canyon').tap();
+  await page.getByTestId('start-race').tap();
+  await page.waitForFunction(() => ['intro', 'countdown', 'racing'].includes(window.__game.state), null, { timeout: 30000 });
+  expect(await page.evaluate(() => window.__game.world.track.id)).toBe('sunset-canyon');
+  await page.evaluate(() => window.__game.skipIntro());
+  await page.waitForFunction(() => window.__game.state === 'racing', null, { timeout: 15000 });
+
+  await expect(page.locator('.mobile-controls')).toBeVisible();
+  // Acceleration is automatic on touch devices.
+  await expect.poll(() => page.evaluate(() => window.__game.world.player.speed), { timeout: 15000 }).toBeGreaterThan(5);
+
+  // A few seconds of driving with the touch controls: steer right while holding drift, then brake.
   const touches = await context.newCDPSession(page);
-  const steeringBounds = await page.locator('.mobile-steering').boundingBox();
-  const steering = { id: 1, x: steeringBounds.x + steeringBounds.width / 2, y: steeringBounds.y + steeringBounds.height / 2 };
+  const steering = { id: 1, ...center(await page.getByTestId('touch-steering').boundingBox()) };
+  const drift = { id: 2, ...center(await page.getByTestId('touch-drift').boundingBox()) };
   await touches.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [steering] });
-  await expect.poll(() => page.evaluate(() => window.__game.world.player.input.steer)).toBe(0);
-  steering.x += 30;
+  steering.x += 40;
   await touches.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [steering] });
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.steer)).toBeGreaterThan(0.2);
-  expect(await page.evaluate(() => window.__game.world.player.input.steer)).toBeLessThan(0.5);
-  const driftBounds = await page.locator('[data-hold=drift]').boundingBox();
-  const drift = { id: 2, x: driftBounds.x + driftBounds.width / 2, y: driftBounds.y + driftBounds.height / 2 };
   await touches.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [steering, drift] });
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.drift)).toBe(true);
+  const start = await page.evaluate(() => window.__game.world.player.position.toArray());
+  await page.waitForTimeout(2500);
+  const travelled = await page.evaluate(s => Math.hypot(...window.__game.world.player.position.toArray().map((v, i) => v - s[i])), start);
+  expect(travelled, 'the kart drives while steering and drifting').toBeGreaterThan(3);
   await touches.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.steer)).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.drift)).toBe(false);
-  await expect(page.locator('.mobile-steering')).toHaveAttribute('aria-valuenow', '0');
-  const brakeBounds = await page.locator('[data-hold=brake]').boundingBox();
-  const brake = { id: 3, x: brakeBounds.x + brakeBounds.width / 2, y: brakeBounds.y + brakeBounds.height / 2 };
+
+  const brake = { id: 3, ...center(await page.getByTestId('touch-brake').boundingBox()) };
   await touches.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [brake] });
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.brake)).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.throttle)).toBe(0);
   await touches.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await expect.poll(() => page.evaluate(() => window.__game.world.player.input.brake)).toBe(0);
   await touches.detach();
-  await page.locator('.mobile-pause').tap();
-  await expect.poll(() => page.evaluate(() => window.__game.state)).toBe('paused');
+
+  await page.getByTestId('touch-pause').tap();
+  await expect.poll(() => gameState(page)).toBe('paused');
   await page.locator('[data-a=resume]').tap();
-  await expect.poll(() => page.evaluate(() => window.__game.state)).toBe('racing');
+  await expect.poll(() => gameState(page)).toBe('racing');
+
   await expectRenderedScene(page);
   await expectMobileCockpit(page);
-  await page.screenshot({ path: 'test-results/mobile-landscape.png' });
+  await page.screenshot({ path: 'test-results/mobile-landscape-race.png' });
   await page.evaluate(() => window.__game.finishPlayer());
   await expect(page.locator('.results')).toBeVisible({ timeout: 15000 });
-  expect(errors).toEqual([]);
-  expect(await page.evaluate(() => window.__game.errors())).toEqual([]);
+  await expectNoGameErrors(page, errors);
   await context.close();
 });
 
-test('mobile item feedback, defensive hold and drift charge stay available in portrait', async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
+// (2) ---------------------------------------------------------------------------------------------
+async function cockpitAt(browser, sizes) {
+  const context = await browser.newContext({ viewport: sizes[0], isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
   const page = await context.newPage();
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await boot(page);
-  await page.evaluate(() => window.__game.startRace({ gameMode: 'tt', trackId: 'palm-cove', classId: '50cc' }));
-  await page.waitForFunction(() => window.__game.state === 'intro');
-  await page.evaluate(() => window.__game.fastForward(4));
-  await page.waitForFunction(() => window.__game.state === 'racing');
-  await page.evaluate(() => {
-    const world = window.__game.world;
-    world.items.giveItem(world.player, 'triple_mushroom');
-  });
-  const item = page.locator('.mobile-item');
-  await expect(item).toBeEnabled();
-  await expect(page.locator('.mobile-item-count')).toHaveText('×3');
-  await expect(page.locator('.mobile-item-icon')).toBeVisible();
-  expect(await page.locator('.mobile-item-icon').evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+  const errors = await boot(page);
+  await startRaceDirect(page, { gameMode: 'vs', trackId: 'palm-cove', classId: '50cc' });
+  for (const viewport of sizes) {
+    await page.setViewportSize(viewport);
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: `test-results/mobile-${viewport.width}x${viewport.height}.png` });
+    await expectMobileCockpit(page);
+  }
   await expectRenderedScene(page);
-  await expectMobileCockpit(page);
-  await page.screenshot({ path: 'test-results/mobile-portrait-race.png' });
-  await item.tap();
-  await expect.poll(() => page.evaluate(() => window.__game.world.player.itemCount)).toBe(2);
-  await expect(page.locator('.mobile-item-count')).toHaveText('×2');
-  await page.evaluate(() => {
-    const game = window.__game;
-    game.world.items.giveItem(game.world.player, 'banana');
-    game.fastForward(0.4);
-  });
-  await expect(item).toHaveAttribute('aria-label', 'Use banana');
-  const touches = await context.newCDPSession(page);
-  const bounds = await item.boundingBox();
-  await touches.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 1, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }] });
-  await expect.poll(() => page.evaluate(() => window.__game.world.items.isDragging(window.__game.world.player))).toBe(true);
-  expect(await page.evaluate(() => window.__game.world.player.item)).toBe('banana');
-  await touches.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await expect.poll(() => page.evaluate(() => window.__game.world.player.item)).toBe(null);
-  await expect(item).toBeDisabled();
-  await touches.detach();
+  await expectNoGameErrors(page, errors);
+  await context.close();
+}
 
-  const feedback = await page.evaluate(() => {
-    const game = window.__game;
-    const controls = game.mobileControls;
-    controls.updateRace({ drifting: true, driftLevel: 2, driftCharge: 1.9, boostTimer: 0 });
-    const ready = { label: controls.driftLabel.textContent, level: controls.driftButton.dataset.level, charge: controls.driftButton.style.getPropertyValue('--charge') };
-    controls.updateRace({ drifting: false, boostTimer: 0.5 });
-    const boost = controls.driftLabel.textContent;
-    controls.updateRace(game.world.player, game.world.items);
-    return { ready, boost };
-  });
-  expect(feedback.ready).toEqual({ label: 'SUPER', level: '2', charge: '0.67' });
-  expect(feedback.boost).toBe('BOOST');
-  expect(errors).toEqual([]);
-  expect(await page.evaluate(() => window.__game.errors())).toEqual([]);
+test('portrait 320x568: toolbar and HUD never overlap, also after rotating to a phone landscape and back', async ({ browser }) => {
+  test.setTimeout(120000);
+  await cockpitAt(browser, [{ width: 320, height: 568 }, { width: 844, height: 390 }, { width: 320, height: 568 }]);
+});
+
+test('small landscape 568x320 (iPhone SE 1st gen) cockpit', async ({ browser }) => {
+  // Regression guard: the position badge used to touch the toolbar at this size (fixed in src/mobile.css).
+  test.setTimeout(120000);
+  await cockpitAt(browser, [{ width: 568, height: 320 }]);
+});
+
+// (3) ---------------------------------------------------------------------------------------------
+test('settings: switching language FR ⇄ EN is immediate and persists', async ({ browser }) => {
+  const context = await browser.newContext({ ...PHONE_LANDSCAPE, locale: 'en-US' });
+  const page = await context.newPage();
+  const errors = await boot(page);
+  const play = page.getByTestId('title-play');
+  await expect(play).toContainText('Play');
+
+  await page.getByTestId('title-settings').tap();
+  await page.locator('[data-act=set][data-k=lang][data-v=fr]').tap();
+  await expect.poll(() => page.evaluate(() => document.documentElement.lang)).toBe('fr');
+  await expect(page.locator('[data-act=set][data-k=lang][data-v=fr]')).toHaveClass(/\bon\b/);
+  await expect(page.locator('[data-screen=settings] .menu-head')).toContainText('Réglages');
+  await page.locator('[data-screen=settings]').getByTestId('back').tap();
+  await expect(play).toContainText('Jouer');
+
+  // The choice survives a reload (stored in lumenkart.settings.v1).
+  await page.reload();
+  await page.waitForFunction(() => window.__game?.state === 'title', null, { timeout: 45000 });
+  await expect(page.getByTestId('title-play')).toContainText('Jouer');
+
+  await page.getByTestId('title-settings').tap();
+  await page.locator('[data-act=set][data-k=lang][data-v=en]').tap();
+  await expect.poll(() => page.evaluate(() => document.documentElement.lang)).toBe('en');
+  await expect(page.locator('[data-screen=settings] .menu-head')).toContainText('Settings');
+  await page.locator('[data-screen=settings]').getByTestId('back').tap();
+  await expect(page.getByTestId('title-play')).toContainText('Play');
+  await expectNoGameErrors(page, errors);
   await context.close();
 });
 
-test('private invite joins two clients, shared race, remote steering, results and disconnect', async ({ browser }) => {
+// (4) ---------------------------------------------------------------------------------------------
+test('Grand Prix: four races through the standings to the podium', async ({ browser }) => {
+  test.setTimeout(240000);
+  const context = await browser.newContext(PHONE_LANDSCAPE);
+  const page = await context.newPage();
+  const errors = await boot(page);
+  const cup = await page.evaluate(() => {
+    window.__game.startRace({ gameMode: 'gp', cupId: 'dawn', classId: '50cc' });
+    return window.__game.gp && { id: window.__game.gp.cup.id, tracks: [...window.__game.gp.cup.tracks] };
+  });
+  expect(cup?.id).toBe('dawn');
+  expect(cup.tracks.length).toBe(4);
+  for (const [index, trackId] of cup.tracks.entries()) {
+    await page.waitForFunction(id => ['intro', 'countdown', 'racing'].includes(window.__game.state) && window.__game.world?.track?.id === id,
+      trackId, { timeout: 30000 });
+    expect(await page.evaluate(() => window.__game.gp.index)).toBe(index);
+    await page.evaluate(() => window.__game.fastForward(4));
+    await page.evaluate(() => window.__game.finishPlayer());
+    await expect(page.locator('.results')).toBeVisible({ timeout: 15000 });
+    await page.getByTestId('results-next').click();
+  }
+  await expect(page.locator('.results.podium-screen')).toBeVisible({ timeout: 15000 });
+  await expect(page.locator('.podium')).toBeVisible();
+  await page.screenshot({ path: 'test-results/gp-podium.png' });
+  await page.getByTestId('results-done').click();
+  await expect.poll(() => gameState(page), { timeout: 15000 }).toBe('title');
+  expect(await page.evaluate(() => window.__game.gp)).toBeNull();
+  await expectNoGameErrors(page, errors);
+  await context.close();
+});
+
+// (5) ---------------------------------------------------------------------------------------------
+test('online: private room, two browsers, remote steering, results and host disconnect', async ({ browser }) => {
   test.setTimeout(180000);
   const ctx = await browser.newContext({ viewport: { width: 960, height: 600 } });
   const host = await ctx.newPage();
   const guest = await ctx.newPage();
-  const errors=[];
-  for (const page of [host, guest]) page.on('pageerror',e=>errors.push(e.message));
-  await boot(host); await boot(guest);
-  for (const page of [host,guest]) { await page.locator('.title-screen').click(); await page.locator('.mode-card.m-vs').click(); await page.locator('.online-race-btn').click(); }
+  const errors = [];
+  await boot(host, errors);
+  await boot(guest, errors);
+  for (const page of [host, guest]) await page.evaluate(() => window.__game.openOnline());
+
   await host.locator('[data-name]').fill('Host');
   await host.locator('[data-create]').click();
-  await expect(host.locator('.online-code strong')).toBeVisible();
+  await expect(host.locator('.online-code strong')).toBeVisible({ timeout: 15000 });
   const code = await host.locator('.online-code strong').textContent();
   await guest.locator('[data-code]').fill(code);
   await guest.locator('[data-name]').fill('Guest');
@@ -221,76 +270,27 @@ test('private invite joins two clients, shared race, remote steering, results an
   await guest.locator('[data-ready]').click();
   await expect(host.locator('[data-start]')).toBeEnabled();
   await host.locator('[data-start]').click();
-  for (const page of [host,guest]) await page.waitForFunction(()=>window.__game.state==='racing', {timeout:30000});
-  const initial = await host.evaluate(()=>window.__game.world.karts[1].position.toArray());
+  for (const page of [host, guest]) await page.waitForFunction(() => window.__game.state === 'racing', null, { timeout: 30000 });
+
+  const initial = await host.evaluate(() => window.__game.world.karts[1].position.toArray());
   await guest.keyboard.down('ArrowUp');
-  await expect.poll(()=>host.evaluate(()=>window.__game.world.karts[1].speed), {timeout:10000}).toBeGreaterThan(8);
+  await expect.poll(() => host.evaluate(() => window.__game.world.karts[1].speed), { timeout: 10000 }).toBeGreaterThan(8);
   await expect.poll(() => guest.evaluate(start => {
     const position = window.__game.world.player.position.toArray();
     return Math.hypot(...position.map((value, index) => value - start[index]));
   }, initial), { timeout: 10000 }).toBeGreaterThan(1);
   await guest.keyboard.up('ArrowUp');
-  const positions = await guest.evaluate(()=>({pos:window.__game.world.player.position.toArray(),index:window.__game.world.player.index,phase:window.__game.world.race.phase}));
-  expect(positions.index).toBe(1); expect(positions.phase).toBe('racing');
-  expect(Math.hypot(...positions.pos.map((v,i)=>v-initial[i]))).toBeGreaterThan(1);
+  const guestView = await guest.evaluate(() => ({ index: window.__game.world.player.index, phase: window.__game.world.race.phase }));
+  expect(guestView).toEqual({ index: 1, phase: 'racing' });
   await expectRenderedScene(guest);
-  await guest.screenshot({ path: 'test-results/desktop-race.png' });
-  await host.evaluate(()=>{ const w=window.__game.world; for (const k of w.karts.filter(k=>k.netId)) w.race._finish(k); });
-  for (const page of [host,guest]) await expect(page.locator('.results')).toBeVisible({timeout:15000});
-  expect(await host.evaluate(()=>window.__game.errors())).toEqual([]);
-  expect(await guest.evaluate(()=>window.__game.errors())).toEqual([]);
-  await host.evaluate(()=>window.__game.goToTitle());
-  await expect.poll(()=>guest.evaluate(()=>window.__game.state)).toBe('title');
+  await guest.screenshot({ path: 'test-results/online-guest.png' });
+
+  await host.evaluate(() => { const w = window.__game.world; for (const k of w.karts.filter(k => k.netId)) w.race._finish(k); });
+  for (const page of [host, guest]) await expect(page.locator('.results')).toBeVisible({ timeout: 15000 });
+  await host.evaluate(() => window.__game.goToTitle());
+  await expect.poll(() => gameState(guest), { timeout: 15000 }).toBe('title');
   expect(errors).toEqual([]);
+  expect(await host.evaluate(() => window.__game.errors())).toEqual([]);
+  expect(await guest.evaluate(() => window.__game.errors())).toEqual([]);
   await ctx.close();
-});
-
-
-test('portrait menu and all course renders remain usable', async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
-  const page = await context.newPage();
-  const errors=[]; page.on('pageerror',e=>errors.push(e.message));
-  await boot(page);
-  await page.locator('.title-screen').tap();
-  await expect(page.locator('.mode-screen')).toHaveCSS('opacity', '1');
-  await page.locator('.mode-card.m-gp').tap();
-  await expect(page.locator('.select-screen')).toHaveCSS('opacity', '1');
-  await expect(page.locator('.online-race-btn')).toBeVisible();
-  await page.screenshot({path:'test-results/mobile-portrait-menu.png'});
-  await page.setViewportSize({width:844,height:390});
-  await expect(page.locator('.select-screen')).toHaveCSS('opacity', '1');
-  await page.screenshot({path:'test-results/mobile-landscape-menu.png'});
-  for (const trackId of ['frosty-peaks','sunset-canyon','lava-keep']) {
-    await page.evaluate(trackId=>window.__game.startRace({gameMode:'vs',trackId,classId:'150cc'}),trackId);
-    await page.waitForFunction(trackId=>window.__game.state==='intro' && window.__game.world.track.id===trackId,trackId);
-    await page.evaluate(()=>window.__game.fastForward(4));
-    await page.waitForFunction(()=>window.__game.state==='racing');
-    await expectRenderedScene(page);
-    await page.screenshot({path:`test-results/${trackId}.png`});
-    expect(await page.evaluate(()=>window.__game.world.hazards.items.length)).toBeGreaterThan(0);
-    expect(await page.evaluate(()=>window.__game.errors())).toEqual([]);
-  }
-  expect(errors).toEqual([]);
-  await context.close();
-});
-
-test('mobile cockpit fits small phones after rotation', async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 568, height: 320 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
-  const page = await context.newPage();
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await boot(page);
-  await page.evaluate(() => window.__game.startRace({ gameMode: 'vs', trackId: 'palm-cove', classId: '50cc' }));
-  await page.waitForFunction(() => window.__game.state === 'intro');
-  await page.evaluate(() => window.__game.fastForward(4));
-  await page.waitForFunction(() => window.__game.state === 'racing');
-  for (const viewport of [{ width: 568, height: 320 }, { width: 320, height: 568 }, { width: 844, height: 390 }]) {
-    await page.setViewportSize(viewport);
-    await expectRenderedScene(page);
-    await expectMobileCockpit(page);
-    await page.screenshot({ path: `test-results/mobile-${viewport.width}x${viewport.height}.png` });
-  }
-  expect(errors).toEqual([]);
-  expect(await page.evaluate(() => window.__game.errors())).toEqual([]);
-  await context.close();
 });

@@ -7,4 +7,35 @@ dist/
 .env.*
 !.env.example
 playwright-report/
+.e2e-dist/
 test-results/
+
+# Native build outputs (the ios/ and android/ projects themselves are committed)
+ios/App/Pods/
+ios/App/build/
+ios/App/output/
+ios/DerivedData/
+DerivedData/
+xcuserdata/
+*.xcarchive
+*.ipa
+*.dSYM.zip
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+*.apk
+*.aab
+
+# Signing material and store credentials — never committed
+*.keystore
+*.jks
+*.p12
+*.p8
+*.mobileprovision
+keystore.properties
+android/keystore.properties
+play-service-account*.json
+
+# Generated store screenshots (npm run store:screenshots)
+store/screenshots/

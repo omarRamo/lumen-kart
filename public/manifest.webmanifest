@@ -1,0 +1,22 @@
+{
+  "id": "./",
+  "name": "Lumen Kart",
+  "short_name": "Lumen Kart",
+  "description": "Kart arcade en 3D avec Lumen, le petit renard à l'écharpe. Hors ligne, sans publicité, sans traçage.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#1f4f4c",
+  "theme_color": "#1f4f4c",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

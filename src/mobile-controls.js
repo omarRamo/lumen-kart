@@ -1,6 +1,7 @@
 import { isNativeMotionAvailable, startNativeMotion } from './native-motion.js';
 import { PHYSICS } from './config.js';
-import { itemIcon } from './hud.js';
+import { itemIcon, svgIcon } from './icons.js';
+import { t, itemLabel } from './i18n.js';
 // Mobile input layer. Instantiate once: new MobileControls({ input, parent, onPause }).
 // Call updateState(mainState) whenever the game state changes; dispose on shutdown.
 // Auto throttle deliberately starts only in racing, and is excluded from peekThrottle,
@@ -38,8 +39,9 @@ export function driftProgress(charge) {
 }
 
 export class MobileControls {
-  constructor({ input, parent = document.body, onPause = () => input.triggerAction('pause'), enabled } = {}) {
+  constructor({ input, parent = document.body, onPause = () => input.triggerAction('pause'), enabled, onSteeringChange } = {}) {
     this.input = input;
+    this.onSteeringChange = onSteeringChange || null;
     this.enabled = enabled ?? (matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0);
     this.state = 'boot';
     this.held = new Map();
@@ -52,13 +54,13 @@ export class MobileControls {
     this.abort = new AbortController();
     this.root = document.createElement('div');
     this.root.className = 'mobile-controls';
-    this.root.innerHTML = `<div class="mobile-toolbar"><button type="button" class="mobile-small mobile-sensor" aria-pressed="false">GYRO OFF</button><button type="button" class="mobile-small mobile-calibrate" aria-label="Recenter steering" title="Recenter steering">⊕</button><button type="button" class="mobile-small mobile-pause" aria-label="Pause race" title="Pause race">Ⅱ</button></div>
+    this.root.innerHTML = `<div class="mobile-toolbar"><button type="button" class="mobile-small mobile-sensor" data-testid="touch-tilt" aria-pressed="false"></button><button type="button" class="mobile-small mobile-calibrate">${svgIcon('recenter')}</button><button type="button" class="mobile-small mobile-pause" data-testid="touch-pause">${svgIcon('pause')}</button></div>
       <div class="mobile-status" role="status"></div>
-      <div class="mobile-steering" role="slider" tabindex="0" aria-label="Steering" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0"><span aria-hidden="true">◀</span><span class="mobile-stick" aria-hidden="true"></span><span aria-hidden="true">▶</span></div>
+      <div class="mobile-steering" data-testid="touch-steering" role="slider" tabindex="0" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0"><span class="mobile-arrow l" aria-hidden="true">${svgIcon('back')}</span><span class="mobile-stick" aria-hidden="true"></span><span class="mobile-arrow r" aria-hidden="true">${svgIcon('back')}</span></div>
       <div class="mobile-actions">
-        <button type="button" class="mobile-item" data-hold="item" aria-label="No item" disabled><img class="mobile-item-icon" alt="" hidden><span class="mobile-item-empty" aria-hidden="true">?</span><span class="mobile-item-count" aria-hidden="true"></span></button>
-        <button type="button" data-hold="drift" aria-label="Drift"><span class="mobile-drift-label">DRIFT</span><span class="mobile-charge" aria-hidden="true"><span></span></span></button>
-        <button type="button" data-hold="brake">BRAKE</button>
+        <button type="button" class="mobile-item" data-hold="item" data-testid="touch-item" disabled><img class="mobile-item-icon" alt="" hidden><span class="mobile-item-empty" aria-hidden="true">?</span><span class="mobile-item-count" aria-hidden="true"></span></button>
+        <button type="button" data-hold="drift" data-testid="touch-drift"><span class="mobile-drift-label"></span><span class="mobile-charge" aria-hidden="true"><span></span></span></button>
+        <button type="button" data-hold="brake" data-testid="touch-brake"><span class="mobile-brake-label"></span></button>
       </div>`;
     parent.appendChild(this.root);
     this.status = this.root.querySelector('.mobile-status');
@@ -121,17 +123,42 @@ export class MobileControls {
       if (e.detail === 0 && this.state === 'racing') this.input.triggerAction('item');
     });
     on(this.root.querySelector('.mobile-pause'), 'click', onPause);
-    on(this.sensorButton, 'click', () => this.enableTilt());
+    on(this.sensorButton, 'click', () => this.enableTilt(false));
     on(this.root.querySelector('.mobile-calibrate'), 'click', () => this.recenter());
     on(window, 'blur', () => this.release());
     on(document, 'visibilitychange', () => { if (document.hidden) this.release(); });
     on(window, 'orientationchange', () => this.recenter());
     if (screen.orientation) on(screen.orientation, 'change', () => this.recenter());
     on(window, 'deviceorientation', e => this.orientation(e));
-    this.input.setMobileProvider(() => this.getInput());
+    this.input?.setMobileProvider?.(() => this.getInput());
     document.body.classList.toggle('mobile-mode', this.enabled);
+    this.relabel();
     this.updateState('boot');
   }
+
+  /** Re-apply translated labels (language switch). */
+  relabel() {
+    const q = (s) => this.root.querySelector(s);
+    this._setSensorLabel();
+    q('.mobile-calibrate').setAttribute('aria-label', t('mobile.recenter'));
+    q('.mobile-calibrate').title = t('mobile.recenter');
+    q('.mobile-pause').setAttribute('aria-label', t('mobile.pause'));
+    q('.mobile-pause').title = t('mobile.pause');
+    this.steering.setAttribute('aria-label', t('mobile.steering'));
+    q('.mobile-brake-label').textContent = t('mobile.brake');
+    q('[data-hold=brake]').setAttribute('aria-label', t('mobile.brake'));
+    this.lastItemKey = null;
+    this.lastDriftKey = null;
+    if (this.driftLabel) this.driftLabel.textContent = t('mobile.drift');
+    if (!this.itemButton.getAttribute('aria-label')) this.itemButton.setAttribute('aria-label', t('mobile.noItem'));
+  }
+  _setSensorLabel() {
+    this.sensorButton.textContent = t(this.tiltEnabled ? 'mobile.gyroOn' : 'mobile.gyroOff');
+    this.sensorButton.setAttribute('aria-pressed', String(!!this.tiltEnabled));
+  }
+  /** Settings asked for tilt steering: enable it (must run from a user gesture on iOS). */
+  ensureTilt() { if (this.enabled && !this.tiltEnabled) return this.enableTilt(true); }
+  disableTilt() { if (this.tiltEnabled) return this.enableTilt(true); }
 
   setTouch(value) {
     this.touch = value;
@@ -159,7 +186,7 @@ export class MobileControls {
       if (item) this.itemImage.src = itemIcon(item);
       this.itemCount.textContent = count > 1 ? `×${count}` : '';
       this.itemButton.classList.toggle('spinning', spinning);
-      const label = spinning ? 'Choosing item' : item ? `Use ${item.replaceAll('_', ' ')}${count > 1 ? `, ${count} remaining` : ''}` : 'No item';
+      const label = spinning ? t('mobile.choosing') : item ? `${t('mobile.use', { item: itemLabel(item) })}${count > 1 ? ` ×${count}` : ''}` : t('mobile.noItem');
       this.itemButton.setAttribute('aria-label', label);
       this.itemButton.title = label;
     }
@@ -168,7 +195,7 @@ export class MobileControls {
 
     const level = player.drifting ? Math.min(3, Math.max(0, player.driftLevel | 0)) : 0;
     const boosting = player.boostTimer > 0;
-    const label = player.drifting ? ['DRIFT', 'MINI', 'SUPER', 'ULTRA'][level] : boosting ? 'BOOST' : 'DRIFT';
+    const label = player.drifting ? (level ? t('hud.drift.' + level).toUpperCase() : t('mobile.drift')) : boosting ? t('mobile.boost') : t('mobile.drift');
     const progress = Math.round((player.drifting ? driftProgress(player.driftCharge) : boosting ? 1 : 0) * 100);
     const driftKey = `${label}:${progress}`;
     if (driftKey !== this.lastDriftKey) {
@@ -177,7 +204,7 @@ export class MobileControls {
       this.driftButton.classList.toggle('boosting', boosting && !player.drifting);
       this.driftButton.style.setProperty('--charge', progress / 100);
       this.driftLabel.textContent = label;
-      this.driftButton.setAttribute('aria-label', level ? `Drift, ${label.toLowerCase()} turbo ready` : boosting ? 'Drift, boost active' : 'Drift');
+      this.driftButton.setAttribute('aria-label', level ? `${t('mobile.drift')} · ${label}` : boosting ? `${t('mobile.drift')} · ${t('mobile.boost')}` : t('mobile.drift'));
     }
   }
 
@@ -192,30 +219,32 @@ export class MobileControls {
     this.release();
     this.center = null;
     this.tilt = 0;
-    if (this.tiltEnabled) this.status.textContent = 'CENTERING';
+    if (this.tiltEnabled) this.status.textContent = t('mobile.centering');
   }
 
   prepareRace() {
     this.recenter();
   }
 
-  async enableTilt() {
+  /** Toggle tilt steering. `fromSettings` = called by the settings flow (don't echo back). */
+  async enableTilt(fromSettings = false) {
+    const notify = (mode) => { if (!fromSettings) { try { this.onSteeringChange?.(mode); } catch { /* ignore */ } } };
     if (this.tiltEnabled) {
       this.tiltEnabled = false;
       this.nativeStop?.(); this.nativeStop = null;
-      this.sensorButton.textContent = 'GYRO OFF';
-      this.sensorButton.setAttribute('aria-pressed', 'false');
+      this._setSensorLabel();
       this.status.textContent = '';
       clearTimeout(this.sensorTimeout);
+      notify('touch');
       return;
     }
     try {
       if (isNativeMotionAvailable()) {
         this.tiltEnabled = true;
         this.lastSensor = 0;
-        this.sensorButton.textContent = 'GYRO ON';
-        this.sensorButton.setAttribute('aria-pressed', 'true');
+        this._setSensorLabel();
         this.recenter();
+        notify('tilt');
         const stop = await startNativeMotion(gravity => {
           const value = gravityTilt(gravity, screen.orientation?.angle ?? window.orientation ?? 0);
           if (value !== null && this.tiltEnabled) this.acceptTilt(value);
@@ -225,28 +254,26 @@ export class MobileControls {
         return;
       }
       if (!window.isSecureContext || !window.DeviceOrientationEvent) throw new Error('unavailable');
-      // Must run directly from this button's user activation on iOS.
+      // Must run directly from a user activation on iOS.
       const permission = typeof DeviceOrientationEvent.requestPermission === 'function'
         ? await DeviceOrientationEvent.requestPermission() : 'granted';
       if (permission !== 'granted') throw new Error('denied');
       this.tiltEnabled = true;
       this.lastSensor = 0;
-      this.sensorButton.textContent = 'GYRO ON';
-      this.sensorButton.setAttribute('aria-pressed', 'true');
+      this._setSensorLabel();
       this.recenter();
+      notify('tilt');
       this.sensorTimeout = setTimeout(() => {
         if (!this.lastSensor) {
-          this.status.textContent = 'NO SENSOR SIGNAL';
+          this.status.textContent = t('mobile.noSignal');
           this.tiltEnabled = false;
-          this.sensorButton.textContent = 'GYRO OFF';
-          this.sensorButton.setAttribute('aria-pressed', 'false');
+          this._setSensorLabel();
         }
       }, 3000);
     } catch {
       this.tiltEnabled = false;
-      this.sensorButton.textContent = 'GYRO OFF';
-      this.sensorButton.setAttribute('aria-pressed', 'false');
-      this.status.textContent = 'GYRO UNAVAILABLE';
+      this._setSensorLabel();
+      this.status.textContent = t('mobile.gyroUnavailable');
     }
   }
 
@@ -279,7 +306,7 @@ export class MobileControls {
     this.nativeStop?.();
     this.abort.abort();
     clearTimeout(this.sensorTimeout);
-    this.input.setMobileProvider(null);
+    this.input?.setMobileProvider?.(null);
     this.root.remove();
     document.body.classList.remove('mobile-mode');
   }

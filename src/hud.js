@@ -1,15 +1,16 @@
-// In-race HUD: DOM/CSS overlay in #ui-root plus a couple of small canvases (minimap, speedometer, item icons).
+// Lumen Kart — in-race HUD (DOM overlay + minimap canvas), results, GP standings, podium, unlock cards.
 import { bus } from './events.js';
-import { ITEMS, CHARACTERS } from './config.js';
+import { ITEMS, CHARACTERS, CLASSES, PHYSICS } from './config.js';
 import { formatTime } from './race.js';
+import { t, esc, ordinalParts, itemLabel, trackName, cupName, className } from './i18n.js';
+import { itemIcon, svgIcon, noteIconURL } from './icons.js';
+import { SCARVES } from './save.js';
 
+export { itemIcon };
 const hex = (c) => '#' + (c >>> 0).toString(16).padStart(6, '0').slice(-6);
-export const ordinal = (n) => {
-  const s = ['th', 'st', 'nd', 'rd'];
-  const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
-};
-export const PLACE_COLORS = ['#ffd23f', '#e3ecf5', '#f0a162', '#8fdcff', '#8fdcff', '#8fdcff', '#ff8a8a', '#ff6b6b'];
+export const ordinal = (n) => ordinalParts(n).suffix;
+export const PLACE_COLORS = ['#edc371', '#cfd8dc', '#e0a27a', '#7cc8a4', '#7cc8a4', '#7cc8a4', '#9fb3ad', '#9fb3ad'];
+const ROULETTE = ITEMS.filter((i) => i !== 'coin');
 
 function el(tag, cls, parent, html) {
   const e = document.createElement(tag);
@@ -18,227 +19,14 @@ function el(tag, cls, parent, html) {
   if (parent) parent.appendChild(e);
   return e;
 }
-
 function restartAnim(e, cls) {
   e.classList.remove(cls);
-  void e.offsetWidth; // reflow to restart CSS animation
+  void e.offsetWidth;
   e.classList.add(cls);
 }
+const placeHTML = (n) => { const o = ordinalParts(n); return `${o.n}<small>${esc(o.suffix)}</small>`; };
 
-// ---------------------------------------------------------------------------------------------
-// Item icon art (canvas, no emoji)
-// ---------------------------------------------------------------------------------------------
-const iconCache = new Map();
-export function itemIcon(type) {
-  if (iconCache.has(type)) return iconCache.get(type);
-  const c = document.createElement('canvas');
-  c.width = c.height = 128;
-  const g = c.getContext('2d');
-  g.lineJoin = 'round'; g.lineCap = 'round';
-  try { drawItem(g, type); } catch (e) { /* leave blank */ }
-  const url = c.toDataURL();
-  iconCache.set(type, url);
-  return url;
-}
-
-function mushroom(g, x, y, s) {
-  g.save(); g.translate(x, y); g.scale(s, s);
-  // stem
-  g.fillStyle = '#fbe7c6'; g.strokeStyle = '#3a2410'; g.lineWidth = 5;
-  g.beginPath(); g.roundRect(-22, 0, 44, 36, 12); g.fill(); g.stroke();
-  g.fillStyle = '#231a12';
-  g.beginPath(); g.ellipse(-8, 14, 4, 8, 0, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.ellipse(8, 14, 4, 8, 0, 0, Math.PI * 2); g.fill();
-  // cap
-  const grd = g.createRadialGradient(-12, -26, 4, 0, -10, 50);
-  grd.addColorStop(0, '#ff6b6b'); grd.addColorStop(1, '#c71f1f');
-  g.fillStyle = grd;
-  g.beginPath(); g.moveTo(-44, 4); g.bezierCurveTo(-46, -46, 46, -46, 44, 4); g.closePath(); g.fill(); g.stroke();
-  g.fillStyle = '#fff';
-  g.beginPath(); g.arc(0, -24, 11, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.arc(-30, -8, 8, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.arc(30, -8, 8, 0, Math.PI * 2); g.fill();
-  g.restore();
-}
-
-function shell(g, color, dark) {
-  g.save(); g.translate(64, 70);
-  g.strokeStyle = '#1b1b1b'; g.lineWidth = 5;
-  // rim
-  g.fillStyle = '#fffbea';
-  g.beginPath(); g.ellipse(0, 14, 46, 16, 0, 0, Math.PI * 2); g.fill(); g.stroke();
-  // dome
-  const grd = g.createRadialGradient(-14, -24, 4, 0, -6, 56);
-  grd.addColorStop(0, color); grd.addColorStop(1, dark);
-  g.fillStyle = grd;
-  g.beginPath(); g.moveTo(-42, 10); g.bezierCurveTo(-44, -50, 44, -50, 42, 10); g.closePath(); g.fill(); g.stroke();
-  // hex plates
-  g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 4;
-  g.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const a = i / 6 * Math.PI * 2;
-    const px = Math.cos(a) * 13, py = -14 + Math.sin(a) * 11;
-    if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-  }
-  g.closePath(); g.stroke();
-  g.beginPath(); g.moveTo(-13, -14); g.lineTo(-34, -6); g.moveTo(13, -14); g.lineTo(34, -6);
-  g.moveTo(-6, -24); g.lineTo(-12, -38); g.moveTo(6, -24); g.lineTo(12, -38); g.stroke();
-  // shine
-  g.fillStyle = 'rgba(255,255,255,0.55)';
-  g.beginPath(); g.ellipse(-18, -26, 9, 5, -0.6, 0, Math.PI * 2); g.fill();
-  g.restore();
-}
-
-function starPath(g, cx, cy, r1, r2) {
-  g.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const a = -Math.PI / 2 + i * Math.PI / 5;
-    const r = i % 2 === 0 ? r1 : r2;
-    const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
-  }
-  g.closePath();
-}
-
-function drawItem(g, type) {
-  switch (type) {
-    case 'mushroom': mushroom(g, 64, 62, 1.05); break;
-    case 'triple_mushroom':
-      mushroom(g, 64, 42, 0.6); mushroom(g, 34, 86, 0.6); mushroom(g, 94, 86, 0.6); break;
-    case 'banana': {
-      g.save(); g.translate(64, 64);
-      g.strokeStyle = '#3a2a05'; g.lineWidth = 5;
-      const grd = g.createLinearGradient(-40, -40, 40, 40);
-      grd.addColorStop(0, '#fff176'); grd.addColorStop(1, '#f9a825');
-      g.fillStyle = grd;
-      g.beginPath();
-      g.moveTo(-38, -34);
-      g.bezierCurveTo(-52, 20, 0, 52, 44, 30);
-      g.bezierCurveTo(10, 30, -22, 10, -24, -36);
-      g.closePath(); g.fill(); g.stroke();
-      g.fillStyle = '#5d4037';
-      g.beginPath(); g.roundRect(-40, -48, 14, 16, 4); g.fill(); g.stroke();
-      g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 4;
-      g.beginPath(); g.moveTo(-36, -14); g.quadraticCurveTo(-30, 18, 0, 32); g.stroke();
-      g.restore(); break;
-    }
-    case 'green_shell': shell(g, '#66e06a', '#1b8a2a'); break;
-    case 'red_shell': shell(g, '#ff6b6b', '#b71c1c'); break;
-    case 'blue_shell': {
-      // wings
-      g.save(); g.fillStyle = '#ffffff'; g.strokeStyle = '#1b1b1b'; g.lineWidth = 4;
-      for (const s of [-1, 1]) {
-        g.beginPath(); g.moveTo(64 + s * 30, 58);
-        g.bezierCurveTo(64 + s * 70, 30, 64 + s * 66, 70, 64 + s * 40, 78);
-        g.closePath(); g.fill(); g.stroke();
-      }
-      g.restore();
-      shell(g, '#64b5ff', '#0d47a1');
-      // spikes
-      g.fillStyle = '#fff'; g.strokeStyle = '#1b1b1b'; g.lineWidth = 3;
-      for (const [x, y] of [[44, 44], [64, 34], [84, 44]]) {
-        g.beginPath(); g.moveTo(x - 7, y + 8); g.lineTo(x, y - 10); g.lineTo(x + 7, y + 8); g.closePath(); g.fill(); g.stroke();
-      }
-      break;
-    }
-    case 'star': {
-      const grd = g.createRadialGradient(56, 50, 6, 64, 66, 60);
-      grd.addColorStop(0, '#fffde7'); grd.addColorStop(0.5, '#ffeb3b'); grd.addColorStop(1, '#ffa000');
-      g.fillStyle = grd; g.strokeStyle = '#8a4b00'; g.lineWidth = 5;
-      starPath(g, 64, 68, 56, 24); g.fill(); g.stroke();
-      g.fillStyle = '#1b1b1b';
-      g.beginPath(); g.ellipse(55, 64, 5, 10, 0, 0, Math.PI * 2); g.fill();
-      g.beginPath(); g.ellipse(73, 64, 5, 10, 0, 0, Math.PI * 2); g.fill();
-      break;
-    }
-    case 'lightning': {
-      const grd = g.createLinearGradient(40, 10, 90, 120);
-      grd.addColorStop(0, '#fffde7'); grd.addColorStop(0.5, '#ffe54a'); grd.addColorStop(1, '#ffb300');
-      g.fillStyle = grd; g.strokeStyle = '#7a4a00'; g.lineWidth = 5;
-      g.beginPath();
-      g.moveTo(74, 8); g.lineTo(30, 70); g.lineTo(60, 70); g.lineTo(46, 120); g.lineTo(98, 50); g.lineTo(68, 50); g.lineTo(84, 8);
-      g.closePath(); g.fill(); g.stroke();
-      break;
-    }
-    case 'coin': coinIcon(g, 64, 64, 1); break;
-    case 'triple_banana': {
-      for (const [x, y] of [[30, 40], [98, 40], [64, 92]]) { g.save(); g.translate(x - 64 * 0.55, y - 64 * 0.55); g.scale(0.55, 0.55); drawItem(g, 'banana'); g.restore(); }
-      break;
-    }
-    case 'triple_green': {
-      for (const [x, y] of [[34, 40], [94, 40], [64, 90]]) { g.save(); g.translate(x - 64 * 0.55, y - 70 * 0.55); g.scale(0.55, 0.55); shell(g, '#66e06a', '#1b8a2a'); g.restore(); }
-      break;
-    }
-    case 'bomb': {
-      g.save(); g.translate(64, 70);
-      g.strokeStyle = '#111'; g.lineWidth = 5;
-      g.fillStyle = '#ffc83d'; for (const s of [-1, 1]) { g.beginPath(); g.ellipse(s * 26, 42, 16, 9, 0, 0, Math.PI * 2); g.fill(); g.stroke(); }
-      const grd = g.createRadialGradient(-14, -16, 4, 0, 0, 48); grd.addColorStop(0, '#6b7080'); grd.addColorStop(1, '#16181f');
-      g.fillStyle = grd; g.beginPath(); g.arc(0, 0, 42, 0, Math.PI * 2); g.fill(); g.stroke();
-      g.fillStyle = '#9aa0ab'; g.beginPath(); g.roundRect(-12, -52, 24, 14, 4); g.fill(); g.stroke();
-      g.strokeStyle = '#d8c9a0'; g.lineWidth = 5; g.beginPath(); g.moveTo(0, -52); g.quadraticCurveTo(10, -66, 20, -60); g.stroke();
-      g.fillStyle = '#ffeb3b'; g.beginPath(); g.arc(22, -60, 7, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff'; for (const s of [-1, 1]) { g.beginPath(); g.ellipse(s * 13, -4, 7, 12, 0, 0, Math.PI * 2); g.fill(); }
-      g.restore(); break;
-    }
-    case 'ghost': {
-      g.save(); g.translate(64, 66);
-      g.fillStyle = '#f7f7ff'; g.strokeStyle = '#2a2440'; g.lineWidth = 5;
-      g.beginPath(); g.arc(0, -6, 44, Math.PI, 0); g.lineTo(44, 30);
-      for (let i = 0; i < 4; i++) g.quadraticCurveTo(33 - i * 22, 46, 22 - i * 22, 30);
-      g.closePath(); g.fill(); g.stroke();
-      g.fillStyle = '#2a2440'; for (const s of [-1, 1]) { g.beginPath(); g.ellipse(s * 15, -10, 6, 11, 0, 0, Math.PI * 2); g.fill(); }
-      g.fillStyle = '#ff6fa8'; g.beginPath(); g.ellipse(0, 14, 12, 7, 0, 0, Math.PI); g.fill();
-      g.fillStyle = 'rgba(255,120,170,0.5)'; for (const s of [-1, 1]) { g.beginPath(); g.arc(s * 28, 6, 7, 0, Math.PI * 2); g.fill(); }
-      g.restore(); break;
-    }
-    case 'bullet': {
-      g.save(); g.translate(64, 64);
-      g.strokeStyle = '#111'; g.lineWidth = 5;
-      g.fillStyle = '#ff9a2a'; g.beginPath(); g.moveTo(-40, -14); g.lineTo(-58, 0); g.lineTo(-40, 14); g.fill();
-      const grd = g.createLinearGradient(0, -34, 0, 34); grd.addColorStop(0, '#6a6f7c'); grd.addColorStop(0.5, '#2a2d35'); grd.addColorStop(1, '#111');
-      g.fillStyle = grd; g.beginPath(); g.moveTo(-42, -32); g.lineTo(18, -32); g.arc(18, 0, 32, -Math.PI / 2, Math.PI / 2); g.lineTo(-42, 32); g.closePath(); g.fill(); g.stroke();
-      g.fillStyle = '#3a3d46'; g.fillRect(-48, -36, 12, 72); g.strokeRect(-48, -36, 12, 72);
-      g.fillStyle = '#fff'; g.beginPath(); g.ellipse(26, -10, 8, 12, 0, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#111'; g.beginPath(); g.arc(29, -8, 4, 0, Math.PI * 2); g.fill();
-      g.fillStyle = '#fff'; g.fillRect(8, 12, 30, 6);
-      g.restore(); break;
-    }
-    case 'horn': {
-      g.save(); g.translate(64, 64);
-      g.strokeStyle = '#3a2a05'; g.lineWidth = 5;
-      const grd = g.createLinearGradient(-40, -40, 40, 40); grd.addColorStop(0, '#fff3b0'); grd.addColorStop(1, '#f0a020');
-      g.fillStyle = grd;
-      g.beginPath(); g.moveTo(-44, -10); g.lineTo(-10, -10); g.lineTo(34, -42); g.lineTo(34, 42); g.lineTo(-10, 10); g.lineTo(-44, 10); g.closePath(); g.fill(); g.stroke();
-      g.fillStyle = '#e53935'; g.beginPath(); g.ellipse(34, 0, 10, 42, 0, 0, Math.PI * 2); g.fill(); g.stroke();
-      g.strokeStyle = '#fff'; g.lineWidth = 4;
-      for (const r of [12, 22]) { g.beginPath(); g.arc(50, 0, r, -0.8, 0.8); g.stroke(); }
-      g.restore(); break;
-    }
-    default: {
-      g.fillStyle = '#fff'; g.font = 'bold 80px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-      g.fillText('?', 64, 68);
-    }
-  }
-}
-
-function coinIcon(g, x, y, s) {
-  g.save(); g.translate(x, y); g.scale(s, s);
-  const grd = g.createRadialGradient(-14, -16, 4, 0, 0, 50);
-  grd.addColorStop(0, '#fff6b0'); grd.addColorStop(0.5, '#ffc61a'); grd.addColorStop(1, '#c47a00');
-  g.fillStyle = grd; g.strokeStyle = '#5a3a00'; g.lineWidth = 6;
-  g.beginPath(); g.ellipse(0, 0, 38, 46, 0, 0, Math.PI * 2); g.fill(); g.stroke();
-  g.strokeStyle = 'rgba(255,255,255,0.7)'; g.lineWidth = 4; g.beginPath(); g.ellipse(0, 0, 28, 36, 0, 0, Math.PI * 2); g.stroke();
-  g.fillStyle = '#fff3a0'; g.strokeStyle = '#8a5a00'; g.lineWidth = 3; g.beginPath(); g.roundRect(-6, -22, 12, 44, 5); g.fill(); g.stroke();
-  g.restore();
-}
-
-export function coinIconURL() {
-  if (iconCache.has('__coin')) return iconCache.get('__coin');
-  const c = document.createElement('canvas'); c.width = c.height = 64;
-  const g = c.getContext('2d'); coinIcon(g, 32, 32, 0.6);
-  const u = c.toDataURL(); iconCache.set('__coin', u); return u;
-}
+export function coinIconURL() { return noteIconURL(); }
 
 // ---------------------------------------------------------------------------------------------
 export class HUD {
@@ -255,29 +43,32 @@ export class HUD {
     this._lastItemKey = '';
     this._standKey = '';
     this.active = false;
+    this.touch = false;
+    this._unlockQueue = [];
 
     const r = this.root;
-    // top-left: lap + timer + splits
+    // top-left: lap, timer, notes
     this.tl = el('div', 'hud-tl', r);
-    this.lapEl = el('div', 'hud-lap', this.tl, '<span class="lbl">LAP</span><span class="val">1</span><span class="of">/3</span>');
+    this.lapEl = el('div', 'hud-pill hud-lap', this.tl, '<span class="lbl"></span><span class="val">1</span><span class="of">/3</span>');
+    this.lapLbl = this.lapEl.querySelector('.lbl');
     this.lapVal = this.lapEl.querySelector('.val');
     this.lapOf = this.lapEl.querySelector('.of');
-    this.timerEl = el('div', 'hud-timer', this.tl, '0:00.00');
-    this.recordEl = el('div', 'hud-record', this.tl);
-    this.coinEl = el('div', 'hud-coins', this.tl, `<img alt=""><span class="cn">0</span><span class="cmax">/10</span>`);
-    this.splitsEl = el('div', 'hud-splits', this.tl);
-    this.coinEl.querySelector('img').src = coinIconURL();
+    this.timerEl = el('div', 'hud-pill hud-timer', this.tl, '0:00.00');
+    this.coinEl = el('div', 'hud-pill hud-coins', this.tl, '<img alt=""><span class="cn">0</span><span class="cmax">/10</span>');
+    this.coinEl.querySelector('img').src = noteIconURL();
     this.coinVal = this.coinEl.querySelector('.cn');
+    this.recordEl = el('div', 'hud-record', this.tl);
+    this.splitsEl = el('div', 'hud-splits', this.tl);
 
-    // top-centre item slot
+    // top-centre item slot + name
     this.itemWrap = el('div', 'hud-item', r);
     this.itemSlot = el('div', 'item-slot', this.itemWrap);
     this.itemImg = el('img', 'item-img', this.itemSlot);
     this.itemImg.alt = '';
     this.itemCount = el('div', 'item-count', this.itemSlot);
-    this.itemHint = el('div', 'item-hint', this.itemWrap, 'E / SHIFT');
+    this.itemName = el('div', 'item-name', this.itemWrap);
 
-    // right side standings
+    // right side standings (desktop)
     this.standEl = el('div', 'hud-standings', r);
     this.standRows = [];
     for (let i = 0; i < 8; i++) {
@@ -288,63 +79,69 @@ export class HUD {
     // bottom-left minimap
     this.mapWrap = el('div', 'hud-minimap', r);
     this.mapCanvas = el('canvas', '', this.mapWrap);
-    this.mapCanvas.width = this.mapCanvas.height = 440;
+    this.mapCanvas.width = this.mapCanvas.height = 320;
     this.mapCtx = this.mapCanvas.getContext('2d');
     this.mapBg = null;
 
-    // bottom-right: speedo + place
+    // bottom-right: drift meter + place badge
     this.br = el('div', 'hud-br', r);
-    this.speedo = el('div', 'hud-speedo', this.br);
-    this.speedCanvas = el('canvas', '', this.speedo);
-    this.speedCanvas.width = this.speedCanvas.height = 320;
-    this.speedCtx = this.speedCanvas.getContext('2d');
-    this.speedText = el('div', 'speed-val', this.speedo, '0');
-    el('div', 'speed-unit', this.speedo, 'km/h');
-    this.driftPill = el('div', 'drift-pill', this.speedo, 'DRIFT');
-    this.placeEl = el('div', 'hud-place', this.br, '<span class="num">1</span><span class="suf">st</span>');
+    this.driftEl = el('div', 'hud-drift', this.br, '<span class="dl"></span><span class="dbar"><i></i><i></i><i></i></span>');
+    this.driftLbl = this.driftEl.querySelector('.dl');
+    this.driftSegs = [...this.driftEl.querySelectorAll('i')];
+    this.placeEl = el('div', 'hud-place', this.br, '<span class="num">1</span><span class="suf"></span>');
     this.placeNum = this.placeEl.querySelector('.num');
     this.placeSuf = this.placeEl.querySelector('.suf');
 
     // overlays
     this.countEl = el('div', 'hud-countdown', r);
     this.bannerEl = el('div', 'hud-banner', r);
-    this.wrongEl = el('div', 'hud-wrongway', r, '<div class="ww-arrow"></div><div class="ww-text">WRONG WAY</div>');
+    this.wrongEl = el('div', 'hud-wrongway', r, '<div class="ww-arrow"></div><div class="ww-text"></div>');
     this.flashEl = el('div', 'hud-flash', uiRoot);
     this.finishEl = el('div', 'hud-finish', r);
     this.lapPop = el('div', 'hud-lappop', r);
     this.calloutEl = el('div', 'hud-callout', r);
-    this.slipEl = el('div', 'hud-slip', r, '<span>DRAFT</span><i></i>');
+    this.tipEl = el('div', 'hud-tip', r);
+    this.slipEl = el('div', 'hud-slip', r, '<i></i>');
     this.slipFill = this.slipEl.querySelector('i');
-    this._calloutT = 0;
 
-    // results (outside .hud so it stays visible independently)
     this.resultsEl = el('div', 'results hidden', uiRoot);
-    this._resultsKey = null;
-
     this.toastEl = el('div', 'toast', uiRoot);
+    this.unlockEl = el('div', 'unlock-stack', uiRoot);
+    this.fpsEl = el('div', 'fps-meter hidden', uiRoot);
+    this._fps = { frames: 0, time: 0 };
 
     this._subscribe();
+    this.relabel();
   }
 
-  setPortraitProvider(fn) { this.portraitFn = fn; }
+  setPortraitProvider(fn) { this.portraitFn = fn; this._portraits?.clear(); }
   portrait(character) {
     if (!character) return '';
-    const key = character.id;
+    const key = `${character.id}:${character.accent}:${character.scarf}`;
     this._portraits = this._portraits || new Map();
     if (this._portraits.has(key)) return this._portraits.get(key);
     let url = '';
-    try { if (this.portraitFn) url = this.portraitFn(character) || ''; } catch (e) { url = ''; }
+    try { if (this.portraitFn) url = this.portraitFn(character) || ''; } catch { url = ''; }
     this._portraits.set(key, url);
     return url;
   }
 
+  /** Re-apply translated static labels (language switch). */
+  relabel() {
+    this.lapLbl.textContent = t('hud.lap');
+    this.wrongEl.querySelector('.ww-text').textContent = t('hud.wrongWay');
+    this._last = {};
+    this._lastItemKey = '';
+  }
+
   _subscribe() {
     const on = (n, f) => this._offs.push(bus.on(n, (d) => { if (this.active) f(d || {}); }));
+    const P = (k) => k && k.isPlayer;
     on('race:countdown', (d) => this.showCount(String(d.n), 'n' + d.n));
-    on('race:go', () => { this.showCount('GO!', 'go'); clearTimeout(this._cdT); this._cdT = setTimeout(() => this.countEl.classList.remove('show'), 1100); });
-    on('race:finalLap', () => this.banner('FINAL LAP!', 'final'));
+    on('race:go', () => { this.showCount(t('hud.go'), 'go'); clearTimeout(this._cdT); this._cdT = setTimeout(() => this.countEl.classList.remove('show'), 1100); });
+    on('race:finalLap', () => this.banner(t('hud.finalLap'), 'final'));
     on('race:lap', (d) => {
-      if (d.kart && d.kart.isPlayer) {
+      if (P(d.kart)) {
         restartAnim(this.lapEl, 'pulse');
         if (d.lapTime != null) { this.lapPop.textContent = formatTime(d.lapTime); restartAnim(this.lapPop, 'show'); }
       }
@@ -352,60 +149,66 @@ export class HUD {
     on('race:wrongWay', (d) => this.wrongEl.classList.toggle('show', !!d.active));
     on('item:lightning', (d) => { if (!(d.by && d.by.isPlayer)) restartAnim(this.flashEl, 'flash'); else restartAnim(this.flashEl, 'flash-soft'); });
     on('race:finish', (d) => {
-      if (d.kart && d.kart.isPlayer) {
-        const p = d.place || 1;
-        this.finishEl.innerHTML = `<div class="fin-title">FINISH!</div><div class="fin-place" style="color:${PLACE_COLORS[p - 1] || '#fff'}">${p}<small>${ordinal(p)}</small></div>`;
-        restartAnim(this.finishEl, 'show');
-        this.wrongEl.classList.remove('show');
-      }
+      if (!P(d.kart)) return;
+      const p = d.place || 1;
+      this.finishEl.innerHTML = `<div class="fin-title">${esc(t('hud.finish'))}</div><div class="fin-place" style="--pc:${PLACE_COLORS[p - 1] || '#fff'}">${placeHTML(p)}</div>`;
+      restartAnim(this.finishEl, 'show');
+      this.wrongEl.classList.remove('show');
+      this.hideTip();
     });
-    on('item:got', (d) => { if (d.kart && d.kart.isPlayer) restartAnim(this.itemSlot, 'got'); });
-    on('kart:hit', (d) => { if (d.kart && d.kart.isPlayer) restartAnim(this.root, 'shake'); });
-    const P = (k) => k && k.isPlayer;
+    on('item:got', (d) => {
+      if (!P(d.kart)) return;
+      restartAnim(this.itemSlot, 'got');
+      const id = d.item || d.kart.item;
+      if (id) { this.itemName.textContent = itemLabel(id); restartAnim(this.itemName, 'show'); }
+    });
+    on('kart:hit', (d) => { if (P(d.kart)) restartAnim(this.root, 'shake'); });
     on('kart:boost', (d) => {
       if (!P(d.kart)) return;
-      if (d.source === 'trick') this.callout('TRICK!', 'trick');
-      else if (d.source === 'start') this.callout(d.strength >= 1 ? 'ROCKET START!' : 'GOOD START!', 'start');
+      if (d.source === 'trick') this.callout(t('call.trick'), 'trick');
+      else if (d.source === 'start') this.callout(t(d.strength >= 1 ? 'call.rocketStart' : 'call.goodStart'), 'start');
     });
-    on('kart:miniTurbo', (d) => { if (P(d.kart) && d.level >= 3) this.callout('ULTRA MINI-TURBO!', 'ultra'); });
-    on('kart:slipstream', (d) => { if (P(d.kart)) this.callout('SLIPSTREAM!', 'slip'); });
-    on('kart:stall', (d) => { if (P(d.kart)) this.callout('STALLED!', 'bad'); });
-    on('item:block', (d) => { if (P(d.kart)) this.callout('BLOCKED!', 'block'); });
+    on('kart:miniTurbo', (d) => { if (P(d.kart) && d.level >= 3) this.callout(t('call.ultra'), 'ultra'); });
+    on('kart:slipstream', (d) => { if (P(d.kart)) this.callout(t('call.slip'), 'slip'); });
+    on('kart:stall', (d) => { if (P(d.kart)) this.callout(t('call.stall'), 'bad'); });
+    on('item:block', (d) => { if (P(d.kart)) this.callout(t('call.blocked'), 'block'); });
     on('item:steal', (d) => {
-      if (P(d.kart)) this.callout('STOLEN FROM ' + (d.from?.character?.name || '?').toUpperCase() + '!', 'steal');
-      else if (P(d.from)) this.callout((d.kart?.character?.name || '?').toUpperCase() + ' STOLE YOUR ITEM!', 'bad');
+      if (P(d.kart)) this.callout(t('call.stolenFrom', { name: d.from?.character?.name || '?' }), 'steal');
+      else if (P(d.from)) this.callout(t('call.stoleYours', { name: d.kart?.character?.name || '?' }), 'bad');
     });
-    on('item:hit', (d) => { if (P(d.by) && !P(d.kart) && d.kart) this.callout('HIT ' + (d.kart.character?.name || '').toUpperCase() + '!', 'hit'); });
-    on('kart:coin', (d) => { if (P(d.kart) && d.count === 10 && d.gained > 0) this.callout('MAX COINS!', 'coin'); if (P(d.kart)) restartAnim(this.coinEl, 'pop'); });
+    on('item:hit', (d) => { if (P(d.by) && !P(d.kart) && d.kart) this.callout(t('call.hit', { name: d.kart.character?.name || '' }), 'hit'); });
+    on('kart:coin', (d) => { if (P(d.kart) && d.count === 10 && d.gained > 0) this.callout(t('call.maxNotes'), 'coin'); if (P(d.kart)) restartAnim(this.coinEl, 'pop'); });
     on('kart:coinLoss', (d) => { if (P(d.kart)) restartAnim(this.coinEl, 'lose'); });
-    on('kart:fall', (d) => { if (P(d.kart)) this.callout(d.lava ? 'TOO HOT!' : 'SPLASH!', 'bad'); });
-    on('kart:rocket', (d) => { if (P(d.kart)) this.callout('BULLET TIME!', 'ultra'); });
-    on('kart:ghost', (d) => { if (P(d.kart)) this.callout('GHOST MODE', 'steal'); });
-    on('hazard:hit', (d) => { if (P(d.kart)) this.callout(d.type === 'stomper' ? 'SQUASHED!' : 'OUCH!', 'bad'); });
-    on('game:record', () => this.callout('NEW RECORD!', 'ultra'));
+    on('kart:fall', (d) => { if (!P(d.kart)) return; const isVoid = d.pitKind ? d.pitKind === 'void' : !!(d.void || d.lava); this.callout(t(isVoid ? 'call.void' : 'call.splash'), isVoid ? 'ultra' : 'bad'); });
+    on('kart:rocket', (d) => { if (P(d.kart)) this.callout(t('call.feather'), 'ultra'); });
+    on('kart:ghost', (d) => { if (P(d.kart)) this.callout(t('call.veil'), 'steal'); });
+    on('hazard:hit', (d) => { if (P(d.kart)) this.callout(t(d.type === 'stomper' ? 'call.squashed' : 'call.ouch'), 'bad'); });
+    on('game:record', () => this.callout(t('call.record'), 'ultra'));
   }
 
   // ------------------------------------------------------------------ lifecycle
   show() { this.active = true; this.root.classList.remove('hidden'); }
-  hide() { this.active = false; this.root.classList.add('hidden'); }
+  hide() { this.active = false; this.root.classList.add('hidden'); this.hideTip(); }
 
-  reset({ player, track, laps, gameMode = 'vs', record = null }) {
+  reset({ player, track, laps, gameMode = 'vs', record = null, touch = false }) {
     this.player = player;
     this.track = track;
     this.laps = laps;
     this.gameMode = gameMode;
+    this.touch = touch;
+    this.relabel();
     this.root.classList.toggle('mode-tt', gameMode === 'tt');
-    this.recordEl.innerHTML = gameMode === 'tt' ? (record && record.time ? `RECORD ${formatTime(record.time)}` : 'NO RECORD YET') : '';
+    this.recordEl.textContent = gameMode === 'tt' ? (record && record.time ? t('hud.record', { t: formatTime(record.time) }) : t('hud.noRecord')) : '';
     this.calloutEl.className = 'hud-callout';
-    this._last = {};
     this._standKey = '';
-    this._lastItemKey = '';
     this.splitsEl.innerHTML = '';
     this.countEl.className = 'hud-countdown';
     this.bannerEl.className = 'hud-banner';
     this.wrongEl.classList.remove('show');
     this.finishEl.className = 'hud-finish';
     this.lapPop.className = 'hud-lappop';
+    this.itemName.className = 'item-name';
+    this.hideTip();
     this.hideResults();
     this._buildMinimap(track);
   }
@@ -416,33 +219,77 @@ export class HUD {
     void this.calloutEl.offsetWidth;
     this.calloutEl.className = `hud-callout show ${cls}`;
   }
-
-  toast(msg) {
-    this.toastEl.textContent = msg;
-    restartAnim(this.toastEl, 'show');
-  }
-
+  toast(msg) { this.toastEl.textContent = msg; restartAnim(this.toastEl, 'show'); }
   showCount(text, cls) {
     this.countEl.textContent = text;
     this.countEl.className = 'hud-countdown';
     void this.countEl.offsetWidth;
     this.countEl.className = `hud-countdown show ${cls}`;
   }
-
   banner(text, cls = '') {
     this.bannerEl.textContent = text;
     this.bannerEl.className = 'hud-banner';
     void this.bannerEl.offsetWidth;
     this.bannerEl.className = `hud-banner show ${cls}`;
   }
+  /** First-race tutorial hint (stays ~6 s). */
+  tip(text, icon = null) {
+    clearTimeout(this._tipT);
+    this.tipEl.innerHTML = `${icon ? `<img src="${icon}" alt="">` : svgIcon('sparkle')}<span>${esc(text)}</span>`;
+    restartAnim(this.tipEl, 'show');
+    this._tipT = setTimeout(() => this.hideTip(), 6500);
+  }
+  hideTip() { clearTimeout(this._tipT); this.tipEl.classList.remove('show'); }
+
+  setFpsVisible(on) { this.fpsEl.classList.toggle('hidden', !on); this._fpsOn = !!on; }
+  tickFps(rawDt) {
+    if (!this._fpsOn) return;
+    const f = this._fps;
+    f.frames++; f.time += rawDt;
+    if (f.time >= 0.5) { this.fpsEl.textContent = `${Math.round(f.frames / f.time)} i/s`; f.frames = 0; f.time = 0; }
+  }
+
+  /** Celebration cards for unlocks / medals, queued one after another. */
+  celebrate(events = []) {
+    for (const ev of events) {
+      const text = this._unlockText(ev);
+      if (text) this._unlockQueue.push({ ev, text });
+    }
+    if (!this._unlockBusy) this._nextUnlock();
+  }
+  _unlockText(ev) {
+    switch (ev.type) {
+      case 'cup': return t('unlock.cup', { cup: cupName({ id: ev.id, names: ev.names }) });
+      case 'mirror': return t('unlock.mirror');
+      case 'character': { const ch = CHARACTERS.find((c) => c.id === ev.id); return t('unlock.character', { name: ch?.name || ev.id }); }
+      case 'scarf': return t('unlock.scarf', { name: t('scarf.' + ev.id) });
+      case 'medal': { const cls = CLASSES.find((c) => c.id === ev.classId); return t('unlock.medal', { cup: cupName({ id: ev.cupId }), cls: cls ? (cls.mirror ? className(cls) : cls.label) : '' }); }
+      default: return '';
+    }
+  }
+  _nextUnlock() {
+    const item = this._unlockQueue.shift();
+    if (!item) { this._unlockBusy = false; return; }
+    this._unlockBusy = true;
+    const { ev, text } = item;
+    const sw = ev.type === 'scarf' ? SCARVES.find((s) => s.id === ev.id) : null;
+    const icon = ev.type === 'medal' ? `<span class="uc-icon medal m${ev.place}">${svgIcon('trophy')}</span>`
+      : sw ? `<span class="uc-icon swatch-ico" style="--sw:${hex(sw.color)}"></span>`
+        : `<span class="uc-icon">${svgIcon(ev.type === 'character' ? 'star' : 'sparkle')}</span>`;
+    const card = el('div', 'unlock-card', this.unlockEl, `${icon}<span class="uc-text"><small>${esc(ev.type === 'medal' ? t('common.new') : t('unlock.title'))}</small><b>${esc(text)}</b></span>`);
+    bus.emit('game:unlock', ev);
+    requestAnimationFrame(() => card.classList.add('show'));
+    setTimeout(() => { card.classList.remove('show'); card.classList.add('out'); }, 2900);
+    setTimeout(() => { card.remove(); this._nextUnlock(); }, 3300);
+  }
 
   // ------------------------------------------------------------------ minimap
   _buildMinimap(track) {
     this.mapBg = null;
     const mm = track && track.minimap;
-    if (!mm || !mm.points || mm.points.length < 2) { this.mapWrap.style.display = 'none'; return; }
-    this.mapWrap.style.display = '';
-    const W = this.mapCanvas.width, pad = 34;
+    if (!mm || !mm.points || mm.points.length < 2) { this.mapWrap.style.visibility = 'hidden'; return; }
+    this.mapWrap.style.visibility = '';
+    const W = this.mapCanvas.width, pad = 30;
     const b = mm.bounds || this._bounds(mm.points);
     const spanX = Math.max(1, b.maxX - b.minX), spanZ = Math.max(1, b.maxZ - b.minZ);
     const scale = (W - pad * 2) / Math.max(spanX, spanZ);
@@ -456,19 +303,15 @@ export class HUD {
       g.closePath();
     };
     g.lineJoin = 'round'; g.lineCap = 'round';
-    const rw = Math.max(10, (track.roadWidth || 24) * scale);
-    path(); g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = rw + 16; g.stroke();
-    path(); g.strokeStyle = '#ffffff'; g.lineWidth = rw + 6; g.stroke();
-    path(); g.strokeStyle = '#5b6b86'; g.lineWidth = rw; g.stroke();
-    // start line
+    const rw = Math.max(16, Math.min(24, (track.roadWidth || 24) * scale));
+    path(); g.strokeStyle = 'rgba(37,77,69,0.9)'; g.lineWidth = rw + 14; g.stroke();
+    path(); g.strokeStyle = '#fff7dc'; g.lineWidth = rw; g.stroke();
     const p0 = mm.points[0], p1 = mm.points[1];
     const [x0, y0] = this._mp(p0.x, p0.z), [x1, y1] = this._mp(p1.x, p1.z);
     const ang = Math.atan2(y1 - y0, x1 - x0);
     g.save(); g.translate(x0, y0); g.rotate(ang);
-    for (let i = -3; i < 3; i++) for (let j = 0; j < 2; j++) {
-      g.fillStyle = (i + j) % 2 === 0 ? '#fff' : '#111';
-      g.fillRect(j * 5 - 5, i * (rw / 6), 5, rw / 6);
-    }
+    g.fillStyle = '#edc371'; g.strokeStyle = '#254d45'; g.lineWidth = 3;
+    g.beginPath(); g.roundRect(-4, -rw / 2 - 3, 8, rw + 6, 3); g.fill(); g.stroke();
     g.restore();
     this.mapBg = c;
   }
@@ -481,73 +324,30 @@ export class HUD {
     const m = this._map;
     return [m.ox + (x - m.minX) * m.scale, m.oz + (z - m.minZ) * m.scale];
   }
-
-  _drawMinimap(karts, player, time, itemSystem) {
+  _drawMinimap(karts, player, time) {
     if (!this.mapBg) return;
     const g = this.mapCtx, W = this.mapCanvas.width;
     g.clearRect(0, 0, W, W);
     g.drawImage(this.mapBg, 0, 0);
-    if (this.track && this.track.itemBoxPositions) {
-      g.fillStyle = 'rgba(255,215,64,0.85)';
-      for (const p of this.track.itemBoxPositions) { const [x, y] = this._mp(p.x, p.z); g.fillRect(x - 3, y - 3, 6, 6); }
-    }
-    if (itemSystem && typeof itemSystem.getHazards === 'function') {
-      let hz = null;
-      try { hz = itemSystem.getHazards(); } catch (e) { hz = null; }
-      if (hz) {
-        for (const h of hz) {
-          if (!h || !h.position) continue;
-          const [x, y] = this._mp(h.position.x, h.position.z);
-          g.fillStyle = h.type === 'banana' ? '#ffe44d' : h.type && h.type.includes('red') ? '#ff5252' : h.type && h.type.includes('blue') ? '#448aff' : '#69f06e';
-          g.beginPath(); g.arc(x, y, 5, 0, Math.PI * 2); g.fill();
-        }
-      }
-    }
-    // opponents first (back to front by place), then player on top
     for (let i = karts.length - 1; i >= 0; i--) {
       const k = karts[i];
       if (k === player || !k.position) continue;
       const [x, y] = this._mp(k.position.x, k.position.z);
       g.fillStyle = k.character ? hex(k.character.color) : '#ccc';
-      g.strokeStyle = '#111'; g.lineWidth = 4;
-      g.beginPath(); g.arc(x, y, 11, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.strokeStyle = '#254d45'; g.lineWidth = 3.5;
+      g.beginPath(); g.arc(x, y, 12, 0, Math.PI * 2); g.fill(); g.stroke();
     }
     if (player && player.position) {
       const [x, y] = this._mp(player.position.x, player.position.z);
       const pulse = 1 + Math.sin(time * 6) * 0.15;
-      g.fillStyle = 'rgba(255,255,255,0.35)';
-      g.beginPath(); g.arc(x, y, 24 * pulse, 0, Math.PI * 2); g.fill();
-      // heading arrow
+      g.fillStyle = 'rgba(255,247,220,0.45)';
+      g.beginPath(); g.arc(x, y, 20 * pulse, 0, Math.PI * 2); g.fill();
       const h = player.heading || 0;
-      const dx = Math.sin(h), dz = Math.cos(h);
-      g.save(); g.translate(x, y); g.rotate(Math.atan2(dz, dx));
-      g.fillStyle = player.character ? hex(player.character.color) : '#f33';
-      g.strokeStyle = '#fff'; g.lineWidth = 5;
-      g.beginPath(); g.moveTo(20, 0); g.lineTo(-12, 13); g.lineTo(-6, 0); g.lineTo(-12, -13); g.closePath(); g.fill(); g.stroke();
+      g.save(); g.translate(x, y); g.rotate(Math.atan2(Math.cos(h), Math.sin(h)));
+      g.fillStyle = player.character ? hex(player.character.accent || player.character.color) : '#e98c73';
+      g.strokeStyle = '#254d45'; g.lineWidth = 4;
+      g.beginPath(); g.moveTo(24, 0); g.lineTo(-15, 17); g.lineTo(-7, 0); g.lineTo(-15, -17); g.closePath(); g.fill(); g.stroke();
       g.restore();
-    }
-  }
-
-  // ------------------------------------------------------------------ speedometer
-  _drawSpeedo(speed, boosting, maxShown = 60) {
-    const g = this.speedCtx, W = this.speedCanvas.width, cx = W / 2, cy = W / 2, r = W * 0.4;
-    g.clearRect(0, 0, W, W);
-    const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
-    g.lineCap = 'round';
-    g.lineWidth = 26; g.strokeStyle = 'rgba(0,0,0,0.45)';
-    g.beginPath(); g.arc(cx, cy, r, a0, a1); g.stroke();
-    const f = Math.min(1, Math.abs(speed) / maxShown);
-    const grd = g.createLinearGradient(0, W, W, 0);
-    if (boosting) { grd.addColorStop(0, '#ff9100'); grd.addColorStop(1, '#ffea00'); }
-    else { grd.addColorStop(0, '#40c4ff'); grd.addColorStop(0.7, '#69f0ae'); grd.addColorStop(1, '#eeff41'); }
-    g.strokeStyle = grd; g.lineWidth = 18;
-    if (f > 0.005) { g.beginPath(); g.arc(cx, cy, r, a0, a0 + (a1 - a0) * f); g.stroke(); }
-    // ticks
-    g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 4;
-    for (let i = 0; i <= 10; i++) {
-      const a = a0 + (a1 - a0) * i / 10;
-      const r1 = r - 26, r2 = r - (i % 5 === 0 ? 44 : 36);
-      g.beginPath(); g.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1); g.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2); g.stroke();
     }
   }
 
@@ -556,7 +356,6 @@ export class HUD {
     if (!this.active || !player) return;
     const L = this._last;
 
-    // lap
     const laps = race ? race.laps : this.laps || 3;
     const lap = Math.max(1, Math.min(laps, player.lap || 1));
     if (L.lap !== lap || L.laps !== laps) {
@@ -566,39 +365,37 @@ export class HUD {
       this.lapEl.classList.toggle('final', lap === laps && laps > 1);
     }
 
-    // timer
     const rt = race ? (race.phase === 'racing' || race.phase === 'done' ? (player.finished ? player.finishTime : race.raceTime) : 0) : 0;
     const ts = formatTime(rt);
     if (L.ts !== ts) { L.ts = ts; this.timerEl.textContent = ts; }
 
-    // splits
     const lt = player.lapTimes || [];
     if (L.splits !== lt.length) {
       L.splits = lt.length;
       const best = lt.length ? Math.min(...lt) : 0;
-      this.splitsEl.innerHTML = lt.map((t, i) => `<div class="split${t === best && lt.length > 1 ? ' best' : ''}"><span>L${i + 1}</span>${formatTime(t)}</div>`).join('');
+      this.splitsEl.innerHTML = lt.map((x, i) => `<div class="split${x === best && lt.length > 1 ? ' best' : ''}"><span>${i + 1}</span>${formatTime(x)}</div>`).join('');
     }
 
-    // place
     const place = player.place || 1;
     if (L.place !== place) {
       L.place = place;
-      this.placeNum.textContent = place;
-      this.placeSuf.textContent = ordinal(place);
-      this.placeEl.style.setProperty('--pc', PLACE_COLORS[place - 1] || '#fff');
+      const o = ordinalParts(place);
+      this.placeNum.textContent = o.n;
+      this.placeSuf.textContent = o.suffix;
+      this.placeEl.style.setProperty('--pc', PLACE_COLORS[place - 1] || '#9fb3ad');
       restartAnim(this.placeEl, 'bump');
     }
 
     // item slot
     let spinning = false, display = null;
     if (itemSystem && typeof itemSystem.rouletteState === 'function') {
-      try { const rs = itemSystem.rouletteState(player); if (rs) { spinning = !!rs.spinning; display = rs.displayItem || null; } } catch (e) { /* ignore */ }
+      try { const rs = itemSystem.rouletteState(player); if (rs) { spinning = !!rs.spinning; display = rs.displayItem || null; } } catch { /* ignore */ }
     }
     let key;
     if (spinning) {
       this._rouletteTimer -= dt;
-      if (this._rouletteTimer <= 0) { this._rouletteTimer = 0.07; this._rouletteIdx = (this._rouletteIdx + 1) % ITEMS.length; }
-      const shown = display && ITEMS.includes(display) ? display : ITEMS[this._rouletteIdx];
+      if (this._rouletteTimer <= 0) { this._rouletteTimer = 0.08; this._rouletteIdx = (this._rouletteIdx + 1) % ROULETTE.length; }
+      const shown = display && ITEMS.includes(display) ? display : ROULETTE[this._rouletteIdx];
       key = 'spin:' + shown;
       if (key !== this._lastItemKey) this.itemImg.src = itemIcon(shown);
     } else if (player.item) {
@@ -608,9 +405,7 @@ export class HUD {
         this.itemImg.src = itemIcon(player.item);
         this.itemCount.textContent = count > 1 ? '×' + count : '';
       }
-    } else {
-      key = 'none';
-    }
+    } else key = 'none';
     if (key !== this._lastItemKey) {
       this._lastItemKey = key;
       const has = key !== 'none';
@@ -618,10 +413,8 @@ export class HUD {
       this.itemSlot.classList.toggle('spinning', spinning);
       this.itemSlot.classList.toggle('filled', has && !spinning);
       if (!player.item || spinning) this.itemCount.textContent = '';
-      this.itemHint.style.opacity = has && !spinning ? 1 : 0;
     }
 
-    // coins + slipstream meter
     const coins = player.coins | 0;
     if (L.coins !== coins) { L.coins = coins; this.coinVal.textContent = coins; this.coinEl.classList.toggle('max', coins >= 10); }
     const slip = Math.min(1, (player.slipCharge || 0) / 1.5);
@@ -629,21 +422,20 @@ export class HUD {
     if (L.slipOn !== slipOn) { L.slipOn = slipOn; this.slipEl.classList.toggle('show', slipOn); }
     if (slipOn) this.slipFill.style.transform = `scaleX(${slip.toFixed(3)})`;
 
-    // speedometer (km/h-ish: units/s * 3.6)
-    const sp = Math.abs(player.speed || 0);
-    const boosting = player.boostTimer > 0 || player.starTimer > 0;
-    this._drawSpeedo(sp, boosting);
-    const kmh = Math.round(sp * 3.6);
-    if (L.kmh !== kmh) { L.kmh = kmh; this.speedText.textContent = kmh; }
-    if (L.boost !== boosting) { L.boost = boosting; this.speedo.classList.toggle('boost', boosting); }
-    const dl = player.drifting ? (player.driftLevel || 0) : -1;
-    if (L.dl !== dl) {
-      L.dl = dl;
-      this.driftPill.className = 'drift-pill' + (dl >= 0 ? ' show lvl' + dl : '');
-      this.driftPill.textContent = dl >= 3 ? 'ULTRA' : dl === 2 ? 'SUPER' : dl === 1 ? 'MINI' : 'DRIFT';
+    // drift charge meter: three segments filling with the mini-turbo thresholds
+    const dl = player.drifting ? Math.max(0, Math.min(3, player.driftLevel | 0)) : -1;
+    const ch = player.drifting ? (player.driftCharge || 0) : 0;
+    const prog = Math.round(Math.min(1, ch / ((PHYSICS.driftChargeThresholds || [3])[2] || 3)) * 30);
+    const dk = dl + ':' + prog;
+    if (L.dk !== dk) {
+      L.dk = dk;
+      this.driftEl.className = 'hud-drift' + (dl >= 0 ? ' show lvl' + dl : '');
+      this.driftLbl.textContent = dl > 0 ? t('hud.drift.' + dl) : t('hud.drift');
+      const th = PHYSICS.driftChargeThresholds || [0.9, 1.9, 3.0];
+      let prev = 0;
+      this.driftSegs.forEach((s, i) => { const f = Math.max(0, Math.min(1, (ch - prev) / (th[i] - prev))); prev = th[i]; s.style.transform = `scaleX(${f.toFixed(2)})`; });
     }
 
-    // standings
     const standings = (race && race.standings) || karts || [];
     const sk = standings.map((k) => k.index).join(',');
     if (sk !== this._standKey) {
@@ -658,40 +450,39 @@ export class HUD {
         row.row.classList.toggle('me', k === player);
       }
     }
-
-    this._drawMinimap(standings, player, time, itemSystem);
+    this._drawMinimap(standings, player, time);
   }
 
   // ------------------------------------------------------------------ results
   _row(r, i, extra = '') {
     const img = this.portrait(r.character);
     const col = r.character ? hex(r.character.color) : '#888';
-    const pc = PLACE_COLORS[r.place - 1] || '#fff';
-    return `<div class="res-row${r.isPlayer ? ' me' : ''}" style="--d:${0.25 + i * 0.07}s">
-        <div class="res-place" style="color:${pc}">${r.place}<small>${ordinal(r.place)}</small></div>
-        <div class="res-portrait" style="--kc:${col}">${img ? `<img src="${img}" alt="">` : `<span>${(r.name || '?')[0]}</span>`}</div>
-        <div class="res-name">${r.name}${r.isPlayer ? ' <em>YOU</em>' : ''}</div>
+    return `<div class="res-row${r.isPlayer ? ' me' : ''}" style="--d:${0.15 + i * 0.06}s;--pc:${PLACE_COLORS[r.place - 1] || '#9fb3ad'}">
+        <div class="res-place">${placeHTML(r.place)}</div>
+        <div class="res-portrait" style="--kc:${col}">${img ? `<img src="${img}" alt="">` : `<span>${esc((r.name || '?')[0])}</span>`}</div>
+        <div class="res-name">${esc(r.name)}${r.isPlayer ? ` <em>${esc(t('res.you'))}</em>` : ''}</div>
         ${extra}
       </div>`;
   }
 
-  /** Shared panel + keyboard/mouse button handling. buttons = [{label, act, primary}] */
+  /** Shared panel + keyboard/mouse button handling. buttons = [{label, act, primary, icon}] */
   _panel(html, buttons, onAct) {
     const R = this.resultsEl;
     this.hideResults();
-    R.innerHTML = `<div class="res-panel">${html}<div class="res-buttons">${buttons.map((b) => `<button class="btn${b.primary ? ' primary' : ''}" data-act="${b.act}">${b.label}</button>`).join('')}</div></div>`;
+    R.innerHTML = `<div class="res-panel">${html}<div class="res-buttons">${buttons.map((b) => `<button class="pill-btn${b.primary ? ' primary' : ''}" data-act="${b.act}" data-testid="results-${b.act}">${b.icon ? svgIcon(b.icon) : ''}<span>${esc(b.label)}</span></button>`).join('')}</div></div>`;
     R.classList.remove('hidden');
     requestAnimationFrame(() => R.classList.add('show'));
-    const btns = [...R.querySelectorAll('.res-buttons .btn')];
+    const btns = [...R.querySelectorAll('.res-buttons .pill-btn')];
     let sel = 0;
     const focus = () => btns.forEach((b, i) => b.classList.toggle('focus', i === sel));
     focus();
-    const act = (a) => { this.hideResults(); bus.emit('ui:confirm'); onAct(a); };
+    let done = false;
+    const act = (a) => { if (done) return; done = true; this.hideResults(); bus.emit('ui:confirm'); onAct(a); };
     btns.forEach((b, i) => {
       b.addEventListener('click', () => act(b.dataset.act));
-      b.addEventListener('mouseenter', () => { if (sel !== i) { sel = i; focus(); bus.emit('ui:move'); } });
+      b.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse' && sel !== i) { sel = i; focus(); bus.emit('ui:move'); } });
     });
-    this._resKeyPending = (e) => {
+    const handler = (e) => {
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyA', 'KeyD'].includes(e.code)) {
         const d = ['ArrowLeft', 'ArrowUp', 'KeyA'].includes(e.code) ? -1 : 1;
         sel = (sel + d + btns.length) % btns.length; focus(); bus.emit('ui:move'); e.preventDefault();
@@ -699,54 +490,57 @@ export class HUD {
         e.preventDefault(); act(btns[sel].dataset.act);
       }
     };
-    // defer so the keypress that ended the race doesn't trigger a button
-    const handler = this._resKeyPending;
     this._resKey = handler;
+    this._resBack = () => { const last = btns[btns.length - 1]; if (last) act(last.dataset.act); };
+    // defer so the keypress that ended the race doesn't trigger a button
     this._resTimer = setTimeout(() => { if (this._resKey === handler) window.addEventListener('keydown', handler); }, 450);
     return R;
   }
 
-  showResults(results, { onRestart, onMenu, laps, mode, record, newTime, newLap } = {}) {
-    const rows = results.map((r, i) => this._row(r, i, `<div class="res-best">${r.bestLap ? 'BEST ' + formatTime(r.bestLap) : ''}</div>
+  _trackLabel() { return this.track?.def ? trackName(this.track.def) : (this.track?.name || ''); }
+
+  showResults(results, { onRestart, onMenu, laps, mode, record, newTime, newLap, notes = 0 } = {}) {
+    const rows = results.map((r, i) => this._row(r, i, `<div class="res-best">${r.bestLap ? formatTime(r.bestLap) : ''}</div>
         <div class="res-time">${r.estimated ? '~' : ''}${formatTime(r.time)}</div>`)).join('');
     const me = results.find((r) => r.isPlayer);
     let title, sub, extra = '';
     if (mode === 'tt') {
-      title = newTime ? 'NEW RECORD!' : 'TIME TRIAL';
-      sub = `${laps || ''} LAPS · ${this.track?.name || ''}`;
-      const lapsHtml = (me?.kart?.lapTimes || []).map((t, i) => `<div class="tt-lap"><span>LAP ${i + 1}</span>${formatTime(t)}</div>`).join('');
+      title = newTime ? t('res.newRecord') : t('res.tt');
+      sub = t('res.lapRace', { n: laps || '', track: this._trackLabel() });
+      const lapsHtml = (me?.kart?.lapTimes || []).map((x, i) => `<div class="tt-lap" style="--d:${0.15 + i * 0.08}s"><span>${esc(t('res.lapN', { n: i + 1 }))}</span>${formatTime(x)}</div>`).join('');
       extra = `<div class="tt-box"><div class="tt-laps">${lapsHtml}</div><div class="tt-rec">
-        <div>TOTAL <b>${formatTime(me?.time)}</b>${newTime ? ' <em>NEW!</em>' : ''}</div>
-        <div>BEST LAP <b>${formatTime(me?.bestLap)}</b>${newLap ? ' <em>NEW!</em>' : ''}</div>
-        <div class="old">PREVIOUS RECORD ${record && record.time ? formatTime(record.time) : '—'}</div></div></div>`;
+        <div><span>${esc(t('res.total'))}</span><b>${formatTime(me?.time)}</b>${newTime ? ` <em>${esc(t('common.new'))}</em>` : ''}</div>
+        <div><span>${esc(t('res.bestLap'))}</span><b>${formatTime(me?.bestLap)}</b>${newLap ? ` <em>${esc(t('common.new'))}</em>` : ''}</div>
+        <div class="old">${esc(t('res.prevRecord'))} ${record && record.time ? formatTime(record.time) : '—'}</div></div></div>`;
     } else {
-      title = me ? (me.place === 1 ? 'VICTORY!' : me.place <= 3 ? 'PODIUM FINISH!' : 'RACE COMPLETE') : 'RESULTS';
-      sub = `${laps || ''} LAP RACE · ${this.track?.name || ''}`;
+      title = me ? (me.place === 1 ? t('res.victory') : me.place <= 3 ? t('res.podium') : t('res.complete')) : t('res.results');
+      sub = t('res.lapRace', { n: laps || '', track: this._trackLabel() });
     }
-    this._panel(`<div class="res-title">${title}</div><div class="res-sub">${sub.toUpperCase()}</div>
+    const notesChip = notes > 0 ? `<div class="res-notes"><img src="${noteIconURL()}" alt="">${esc(t('res.notes', { n: notes }))}</div>` : '';
+    this._panel(`<div class="res-title">${esc(title)}</div><div class="res-sub">${esc(sub)}</div>${notesChip}
       ${mode === 'tt' ? extra : `<div class="res-table">${rows}</div>`}`,
-    [{ label: mode === 'tt' ? 'TRY AGAIN' : 'RACE AGAIN', act: 'restart', primary: true }, { label: 'MAIN MENU', act: 'menu' }],
+    [{ label: mode === 'tt' ? t('res.tryAgain') : t('res.again'), act: 'restart', primary: true, icon: 'restart' }, { label: t('res.menu'), act: 'menu', icon: 'home' }],
     (a) => { if (a === 'restart') onRestart && onRestart(); else onMenu && onMenu(); });
   }
 
-  showGPResults(results, standings, { cup, raceIndex, total, last, onNext, onMenu } = {}) {
+  showGPResults(results, standings, { cup, raceIndex, total, last, onNext, onMenu, notes = 0 } = {}) {
     const raceRows = results.map((r, i) => this._row(r, i, `<div class="res-best">${formatTime(r.time)}</div><div class="res-pts">+${r.points || 0}</div>`)).join('');
-    const standRows = standings.map((r, i) => this._row(r, i, `<div class="res-best">${r.race ? r.race.place + ordinal(r.race.place) + ' THIS RACE' : ''}</div><div class="res-pts total">${r.points}</div>`)).join('');
-    const R = this._panel(`<div class="res-title">${cup.name.toUpperCase()}</div>
-      <div class="res-sub">RACE ${raceIndex + 1} / ${total} · ${(this.track?.name || '').toUpperCase()}</div>
-      <div class="gp-tabs"><span class="on" data-tab="race">RACE RESULT</span><span data-tab="total">GP STANDINGS</span></div>
+    const standRows = standings.map((r, i) => this._row(r, i, `<div class="res-best">${r.race ? esc(t('res.thisRace', { p: ordinalParts(r.race.place).n + ordinalParts(r.race.place).suffix })) : ''}</div><div class="res-pts total">${r.points}</div>`)).join('');
+    const notesChip = notes > 0 ? `<div class="res-notes"><img src="${noteIconURL()}" alt="">${esc(t('res.notes', { n: notes }))}</div>` : '';
+    const R = this._panel(`<div class="res-title">${esc(cupName(cup))}</div>
+      <div class="res-sub">${esc(t('intro.race', { i: raceIndex + 1, n: total }))} · ${esc(this._trackLabel())}</div>${notesChip}
+      <div class="gp-tabs"><button class="on" data-tab="race">${esc(t('res.tab.race'))}</button><button data-tab="total">${esc(t('res.tab.total'))}</button></div>
       <div class="res-table gp-race">${raceRows}</div>
       <div class="res-table gp-total hidden">${standRows}</div>`,
-    [{ label: last ? 'AWARD CEREMONY' : 'NEXT RACE', act: 'next', primary: true }, { label: 'QUIT GP', act: 'menu' }],
+    [{ label: last ? t('res.ceremony') : t('res.next'), act: 'next', primary: true, icon: last ? 'trophy' : 'arrow' }, { label: t('res.quitGp'), act: 'menu', icon: 'home' }],
     (a) => { clearTimeout(this._gpTab); if (a === 'next') onNext && onNext(); else onMenu && onMenu(); });
-    const tabs = [...R.querySelectorAll('.gp-tabs span')];
-    const show = (t) => {
-      tabs.forEach((x) => x.classList.toggle('on', x.dataset.tab === t));
-      R.querySelector('.gp-race').classList.toggle('hidden', t !== 'race');
-      R.querySelector('.gp-total').classList.toggle('hidden', t !== 'total');
+    const tabs = [...R.querySelectorAll('.gp-tabs button')];
+    const show = (x) => {
+      tabs.forEach((b) => b.classList.toggle('on', b.dataset.tab === x));
+      R.querySelector('.gp-race').classList.toggle('hidden', x !== 'race');
+      R.querySelector('.gp-total').classList.toggle('hidden', x !== 'total');
     };
-    tabs.forEach((x) => x.addEventListener('click', () => show(x.dataset.tab)));
-    tabs.forEach((x) => { x.style.pointerEvents = 'auto'; });
+    tabs.forEach((b) => b.addEventListener('click', () => { clearTimeout(this._gpTab); show(b.dataset.tab); }));
     this._gpTab = setTimeout(() => show('total'), 3200);
   }
 
@@ -754,40 +548,44 @@ export class HUD {
     const top = standings.slice(0, 3);
     const me = standings.find((s) => s.isPlayer);
     const trophy = ['gold', 'silver', 'bronze'];
-    const order = [1, 0, 2]; // 2nd, 1st, 3rd from left
+    const order = [1, 0, 2];
     const cols = order.map((i) => {
       const r = top[i]; if (!r) return '';
       const img = this.portrait(r.character);
       return `<div class="pod-col p${i + 1}${r.isPlayer ? ' me' : ''}" style="--kc:${hex(r.character.color)}">
-        <div class="pod-portrait">${img ? `<img src="${img}" alt="">` : r.name[0]}</div>
-        <div class="pod-name">${r.name}</div><div class="pod-pts">${r.points} PTS</div>
+        <div class="pod-portrait">${img ? `<img src="${img}" alt="">` : esc(r.name[0])}</div>
+        <div class="pod-name">${esc(r.name)}</div><div class="pod-pts">${r.points} ${esc(t('res.pts'))}</div>
         <div class="pod-block"><span>${i + 1}</span></div></div>`;
     }).join('');
-    const msg = me && me.place <= 3 ? `YOU WON THE ${trophy[me.place - 1].toUpperCase()} TROPHY!` : `YOU FINISHED ${me ? me.place + ordinal(me.place) : ''} — TRY AGAIN FOR A TROPHY!`;
+    const msg = me && me.place <= 3 ? t('pod.' + trophy[me.place - 1]) : t('pod.none', { p: me ? ordinalParts(me.place).n + ordinalParts(me.place).suffix : '' });
     const cup3 = me && me.place <= 3 ? `<div class="trophy ${trophy[me.place - 1]}"><div class="cupbowl"></div><div class="cupstem"></div><div class="cupbase"></div></div>` : '';
-    const R = this._panel(`<div class="res-title">${cup.name.toUpperCase()} · ${classLabel}</div>
-      <div class="podium">${cols}</div>${cup3}<div class="pod-msg">${msg}</div>`,
-    [{ label: 'CONTINUE', act: 'done', primary: true }], () => onDone && onDone());
+    const R = this._panel(`<div class="res-title">${esc(cupName(cup))}</div><div class="res-sub">${esc(classLabel || '')}</div>
+      <div class="podium">${cols}</div>${cup3}<div class="pod-msg">${esc(msg)}</div>`,
+    [{ label: t('pod.continue'), act: 'done', primary: true, icon: 'arrow' }], () => onDone && onDone());
     R.classList.add('podium-screen');
     if (me && me.place <= 3) {
       const conf = el('div', 'confetti', R);
-      for (let i = 0; i < 70; i++) {
-        const c = el('i', '', conf);
+      const cols2 = ['#edc371', '#e98c73', '#99d1b7', '#dbb2f6', '#8fd3ff', '#fff7dc'];
+      for (let i = 0; i < 60; i++) {
+        const c = el('i', i % 3 === 0 ? 'star' : '', conf);
         c.style.left = Math.random() * 100 + '%';
-        c.style.background = ['#ffd23f', '#ff4757', '#3de0ff', '#7dff7a', '#ff7ad9', '#fff'][i % 6];
+        c.style.background = cols2[i % cols2.length];
         c.style.animationDelay = (Math.random() * 2.5) + 's';
-        c.style.animationDuration = (2.4 + Math.random() * 2) + 's';
+        c.style.animationDuration = (3 + Math.random() * 2.5) + 's';
       }
     }
   }
 
   hideResults() {
     if (this._resKey) { window.removeEventListener('keydown', this._resKey); this._resKey = null; }
+    this._resBack = null;
     clearTimeout(this._resTimer); clearTimeout(this._gpTab);
     this.resultsEl.classList.remove('show', 'podium-screen');
     this.resultsEl.classList.add('hidden');
     this.resultsEl.innerHTML = '';
   }
+  /** Android back / Escape on a results panel: take the last (secondary) action. */
+  resultsBack() { if (this._resBack) { this._resBack(); return true; } return false; }
 
   get resultsVisible() { return !!this._resKey || this.resultsEl.classList.contains('show'); }
 
@@ -795,7 +593,7 @@ export class HUD {
     for (const off of this._offs) off();
     this._offs = [];
     this.hideResults();
-    this.root.remove(); this.flashEl.remove(); this.resultsEl.remove(); this.toastEl.remove();
+    this.root.remove(); this.flashEl.remove(); this.resultsEl.remove(); this.toastEl.remove(); this.unlockEl.remove(); this.fpsEl.remove();
   }
 }
 
