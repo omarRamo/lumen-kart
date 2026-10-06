@@ -139,7 +139,7 @@ objets défensifs, les derniers des objets de remontée. Tableau complet des pro
 Maintenir le bouton Objet permet de **traîner** une ronce ou une graine derrière soi comme bouclier.
 
 ### Aide à la direction
-Réglage « Aide à la direction » : **Auto (50cc)** par défaut, **Toujours** ou **Jamais**. Quand elle est active :
+Réglage « Aide à la direction » : **Auto** par défaut (active en 50cc pour tous, et en 100cc pour les joueurs au tactile ; désactivée au clavier et à la manette dès le 100cc), **Toujours** ou **Jamais**. Quand elle est active :
 - les mains libres, le kart suit la trajectoire idéale ; dès que le joueur tourne, il reprend la main ;
 - un **garde-bord** corrige avant de quitter la route (même en drift ou en l'air) ;
 - un **régulateur** lève le pied avant un virage trop rapide (sans jamais contredire un freinage) ;
@@ -535,10 +535,10 @@ lumen-kart/
 | `npm run android:apk` | APK debug → `android/app/build/outputs/apk/debug/` |
 | `npm run android:bundle` | AAB release signé (si keystore configuré) → `android/app/build/outputs/bundle/release/app-release.aab` |
 | `npm run store:check` | vérifie fiches boutique, identité, version, permissions (`-- --release` : refuse les placeholders) |
-| `npm run store:screenshots` | captures boutique aux tailles exactes (après `npm run build`) |
+| `npm run store:screenshots` | captures boutique aux tailles exactes (construit son propre bundle `.store-dist/` ; `--no-build` le réutilise) |
 | `npm run server` | relais WebSocket optionnel (port 8787) |
 
-Aide au débogage dans la console du navigateur : `__game.startRace({ gameMode: 'gp', cupId: 'dawn', classId: '50cc' })`,
+Aide au débogage (uniquement en `npm run dev` ou dans un build `VITE_E2E=1` — **absente du build boutique**) : `__game.startRace({ gameMode: 'gp', cupId: 'dawn', classId: '50cc' })`,
 `__game.startRace({ trackId: 'lava-keep', classId: '200cc' })`, `__game.fastForward(10)`, `__game.finishPlayer()`,
 `__game.debug.autopilot = true`.
 
