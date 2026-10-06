@@ -873,7 +873,10 @@ function updateAttractCamera(dt) {
     ac._p.set(target.position.x + Math.sin(a) * r, target.position.y + (select ? 2.5 : 3.6 + Math.sin(ac.angle * 0.5) * 1.2), target.position.z + Math.cos(a) * r);
     ac._l.set(target.position.x, target.position.y + (select ? 1.0 : 1.3), target.position.z);
     const v = target.velocity;
-    if (v) { const lead = 1 / 2.5; ac._p.addScaledVector(v, lead); ac._l.addScaledVector(v, lead); }
+    // Lead by exactly the exponential follow lag (1 / rate) so the driver stays centred while it races:
+    // with the old fixed 0.4 s lead the select close-up looked 6 m ahead of the kart, which ended up
+    // hidden behind the roster grid or the stats card.
+    if (v) { const lead = 1 / (select ? 4 : 2.5); ac._p.addScaledVector(v, lead); ac._l.addScaledVector(v, lead); }
   } else {
     let cx = 0, cz = 0, span = 200;
     const mm = w && w.track && w.track.minimap && w.track.minimap.bounds;
@@ -962,6 +965,18 @@ function simulate(w, dt) {
   }
 }
 
+/** A rival right behind the player sits inside the chase camera and fills the screen (grid start, bumping):
+ *  hide karts closer than ~3.4 m to the lens instead of letting them clip through the near plane. */
+const NEAR_KART2 = 3.4 * 3.4;
+function hideKartsNearCamera(w) {
+  for (let i = 0; i < w.karts.length; i++) {
+    const k = w.karts[i];
+    if (k === w.player || !k.object3D || !k.position) continue;
+    const near = camera.position.distanceToSquared(k.position) < NEAR_KART2;
+    if (k.object3D.visible === near) k.object3D.visible = !near;
+  }
+}
+
 function frame() {
   requestAnimationFrame(frame);
   const rawDt = clock.getDelta();
@@ -992,6 +1007,7 @@ function frame() {
         const lookBack = !!(state === 'racing' && playerInput && playerInput.lookBack);
         safe('camera.update', () => w.chase.update(dt, w.player, { lookBack, mode }));
       }
+      hideKartsNearCamera(w);
       safe('hud.update', () => hud.update(dt, { player: w.player, karts: w.karts, race: w.race, itemSystem: w.items, track: w.track, time }));
       safe('mobile.updateRace', () => mobileControls?.updateRace(w.player, w.items));
     } else {
