@@ -147,3 +147,17 @@ test('settings sanitize, steering assist defaults and quality presets', () => {
   assert.equal(qualityPreset('high', { mobile: true, dpr: 3 }).bloom, false);
   assert.ok(qualityPreset('high', { mobile: false, dpr: 3 }).pixelRatio <= 2);
 });
+
+test('time trial notes are capped like one race and a solo run is never a win (QA)', async () => {
+  const { defaultSave, recordRace, creditedNotes, TT_NOTE_CAP } = await import('../src/save.js');
+  assert.equal(TT_NOTE_CAP, 10);
+  assert.equal(creditedNotes(46, 'tt'), 10);
+  assert.equal(creditedNotes(7, 'tt'), 7);
+  assert.equal(creditedNotes(46, 'gp'), 46);
+  const save = defaultSave();
+  recordRace(save, { place: 1, notes: 46, mode: 'tt' });
+  assert.equal(save.notes, 10, 'a 46-note solo run credits 10');
+  assert.equal(save.wins, 0); assert.equal(save.podiums, 0); assert.equal(save.races, 1);
+  recordRace(save, { place: 1, notes: 12, mode: 'gp' });
+  assert.equal(save.notes, 22); assert.equal(save.wins, 1);
+});

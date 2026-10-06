@@ -17,7 +17,7 @@ import { OnlineUI } from './online-ui.js';
 import { snapshotWorld, SnapshotRenderer } from './multiplayer-race.js';
 import { t, setLanguage, resolveLanguage, onLanguageChange, trackName, trackBlurb, cupName, className, itemLabel } from './i18n.js';
 import {
-  SAVE_KEY, loadSave, writeSave, migrate, defaultSave, recordRace, recordGrandPrix, recordTimeTrial, recordKey, chooseScarf, scarfColor,
+  SAVE_KEY, loadSave, writeSave, migrate, defaultSave, recordRace, creditedNotes, recordGrandPrix, recordTimeTrial, recordKey, chooseScarf, scarfColor,
 } from './save.js';
 import { loadSettings, saveSettings, sanitizeSettings, assistFor, resolveQuality, qualityPreset } from './settings.js';
 import { setItemIconProvider } from './icons.js';
@@ -742,8 +742,8 @@ bus.on('race:end', (d) => {
   if (state === 'paused') resume();
   const w = world;
   const me = results.find((r) => r.isPlayer);
-  const notes = raceNotes;
-  celebrateLater(safe('save.race', () => recordRace(save, { place: me?.place || 9, notes }, cupIdList())) || []);
+  const notes = creditedNotes(raceNotes, lastSettings.gameMode);
+  celebrateLater(safe('save.race', () => recordRace(save, { place: me?.place || 9, notes, mode: lastSettings.gameMode }, cupIdList())) || []);
   if (gp) gp.notes += notes;
   persistSave();
   setTimeout(() => {

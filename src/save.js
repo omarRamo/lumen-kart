@@ -189,12 +189,23 @@ export function recordGrandPrix(save, { cupId, classId, place }, cupIds = DEFAUL
 }
 
 /** Any finished race (GP leg, free race, time trial). */
-export function recordRace(save, { place = 9, notes = 0 } = {}, cupIds = DEFAULT_CUP_IDS) {
+/** Notes a time-trial run may add to the scarf total: alone on the course every note is free, so a run counts
+ *  at most like a full 10/10 race (it used to give ~45 per run and made the scarves farmable). */
+export const TT_NOTE_CAP = 10;
+
+/** Notes credited for a run. mode: 'gp' | 'vs' | 'tt'. */
+export function creditedNotes(notes, mode = 'vs') {
+  const n = Math.max(0, Math.floor(notes) || 0);
+  return mode === 'tt' ? Math.min(TT_NOTE_CAP, n) : n;
+}
+
+export function recordRace(save, { place = 9, notes = 0, mode = 'vs' } = {}, cupIds = DEFAULT_CUP_IDS) {
   const before = computeUnlocks(save, cupIds);
   save.races += 1;
-  if (place === 1) save.wins += 1;
-  if (place <= 3) save.podiums += 1;
-  save.notes = Math.min(1e9, save.notes + Math.max(0, Math.floor(notes) || 0));
+  // A time trial is a solo run: it is never a win or a podium.
+  if (mode !== 'tt' && place === 1) save.wins += 1;
+  if (mode !== 'tt' && place <= 3) save.podiums += 1;
+  save.notes = Math.min(1e9, save.notes + creditedNotes(notes, mode));
   touch(save);
   return diffUnlocks(before, computeUnlocks(save, cupIds));
 }
