@@ -173,3 +173,39 @@ for (const quality of ['high', 'low']) {
     }
   });
 }
+
+// QA: cutting through every expert shortcut still counts the lap, and rocking back and forth over the line never
+// does (the checkpoint + signed lap distance guard).
+test('laps count through the shortcuts and cannot be farmed on the line', async () => {
+  const { RaceManager } = await import('../src/race.js');
+  for (const def of TRACKS.filter((d) => (d.shortcuts || []).length)) {
+    const track = createTrack(new THREE.Scene(), null, { def, quality: 'low' });
+    const kart = { position: new THREE.Vector3(), trackT: 0, isPlayer: true };
+    const race = new RaceManager({ track, karts: [kart], player: kart, laps: 3, silent: true });
+    race.phase = 'racing';
+    let t = 0.995, prevT = t, steps = 0;
+    const p = new THREE.Vector3();
+    const feed = (q) => {
+      prevT = track.getSurfaceInfo(q, prevT).t;
+      kart.trackT = prevT; race.raceTime += 1 / 60; race._updateLaps(kart); steps++;
+    };
+    while (!kart.finished && steps < 100000) {
+      const z = track.shortcuts.find((s) => (s.t0 < s.t1 ? t >= s.t0 && t < s.t1 : t >= s.t0 || t < s.t1));
+      if (z) {
+        const a = track.getPointAt(z.t0), b = track.getPointAt(z.t1), n = Math.ceil(a.distanceTo(b) / 0.6);
+        for (let i = 0; i <= n; i++) feed(p.copy(a).lerp(b, i / n)); // straight across the open field
+        t = z.t1 + 0.0005;
+      } else { feed(track.getPointAt(t)); t = (t + 0.6 / track.length) % 1; }
+    }
+    assert.ok(kart.finished, `${def.id}: 3 laps through the shortcut finish the race`);
+    assert.equal(kart.lapTimes.length, 3);
+    track.dispose();
+  }
+  const track = createTrack(new THREE.Scene(), null, { def: getTrackDef('meadow'), quality: 'low' });
+  const kart = { position: new THREE.Vector3(), trackT: 0.99, isPlayer: true };
+  const race = new RaceManager({ track, karts: [kart], player: kart, laps: 3, silent: true });
+  race.phase = 'racing';
+  for (let i = 0; i < 40; i++) for (const tt of [0.99, 0.995, 0.0, 0.005, 0.01, 0.005, 0.0, 0.995]) { kart.trackT = tt; race._updateLaps(kart); }
+  assert.equal(kart.lap, 1, 'rocking over the line never adds laps');
+  track.dispose();
+});
