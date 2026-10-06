@@ -256,7 +256,9 @@ export class Menu {
     return `${this._head(t('class.title'))}
       <div class="card-row class-cards">${CLASSES.map((c) => {
         const locked = save ? !isClassUnlocked(save, c.id, ids) : false;
-        const assist = c.id === '50cc' && (this._settings()?.assist || 'auto') !== 'off';
+        const a = this._settings()?.assist || 'auto';
+        const touch = !!this.ctx.isTouch?.();
+        const assist = a === 'on' || (a === 'auto' && (c.id === '50cc' || (touch && c.id === '100cc')));
         return `<button class="class-card${this.classId === c.id ? ' selected' : ''}${locked ? ' locked' : ''}" data-act="class" data-v="${c.id}" data-nav data-key="class-${c.id}" data-testid="class-${c.id}" ${locked ? 'aria-disabled="true"' : ''}>
           <span class="cc-label">${c.mirror ? svgIcon('sparkle') : esc(c.label)}</span>
           <span class="cc-name">${esc(className(c))}</span>
@@ -396,6 +398,7 @@ export class Menu {
         <section class="panel set-group"><h3>${svgIcon('flag')}${esc(t('settings.controls'))}</h3>
           ${row(t('settings.steering'), seg('steering', [['touch', t('settings.steering.touch')], ['tilt', t('settings.steering.tilt')]]))}
           ${row(t('settings.assist'), seg('assist', [['auto', t('settings.assist.auto')], ['on', t('settings.assist.on')], ['off', t('settings.assist.off')]]))}
+          <p class="set-note">${esc(t('settings.assist.note'))}</p>
           ${row(t('settings.haptics'), toggle('haptics'))}
         </section>
         <section class="panel set-group"><h3>${svgIcon('sparkle')}${esc(t('settings.display'))}</h3>

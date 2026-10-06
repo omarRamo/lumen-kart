@@ -42,7 +42,8 @@ export const FEEL = {
 // Steering assist defaults ("aide à la direction"). The UI sets kart.assist = { steering, strength }.
 export const ASSIST = {
   defaultStrength: 0.6,
-  defaultOnFor: ['50cc'],    // classes where the settings screen should default the assist ON
+  defaultOnFor: ['50cc'],    // classes where 'auto' turns the assist ON for every control scheme
+  touchOnFor: ['50cc', '100cc'], // ... and for touch players ('auto' only; keyboard / gamepad keep it off at 100cc)
 };
 
 // stats are 1..5. speed -> top speed, accel -> acceleration, handling -> turn rate/drift,

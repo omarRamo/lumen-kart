@@ -260,7 +260,7 @@ const menu = new Menu(uiRoot, {
   onRemember: (last) => { settings.last = { ...settings.last, ...last }; settings = sanitizeSettings(settings); persistSettings(); },
   onResetProgress: () => { save = defaultSave(); persistSave(); hud.setPortraitProvider(portraitFor); recolorAttractLumen(); hud.toast(t('settings.reset.done')); menu.refresh(); },
   onLocked: (msg) => hud.toast(msg),
-}, { getSave: () => save, getSettings: () => settings, characterFor });
+}, { getSave: () => save, getSettings: () => settings, characterFor, isTouch: () => isTouchPlayer() });
 
 function updateSettings(patch) {
   const prev = settings;
@@ -373,9 +373,16 @@ function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.r
 function getClass(id) { return CLASSES.find((c) => c.id === id) || CLASSES[1]; }
 const CLASS_FOR_DIFFICULTY = { easy: '50cc', medium: '100cc', normal: '100cc', hard: '150cc' };
 
+/** Touch player = the touch cockpit is in use and no gamepad drives the kart. */
+function isTouchPlayer() {
+  return !!mobileControls?.enabled && !input?.gamepadConnected && input?.lastDevice !== 'gamepad';
+}
 function applyAssist(w) {
   if (!w?.player) return;
-  safe('assist', () => { w.player.assist = { steering: assistFor(settings, w.cls.id, ASSIST?.defaultOnFor || ['50cc']), strength: ASSIST?.defaultStrength ?? 0.6 }; });
+  safe('assist', () => {
+    const steering = assistFor(settings, w.cls.id, ASSIST?.defaultOnFor || ['50cc'], { touch: isTouchPlayer(), touchClasses: ASSIST?.touchOnFor || ['50cc', '100cc'] });
+    w.player.assist = { steering, strength: ASSIST?.defaultStrength ?? 0.6 };
+  });
 }
 
 function buildWorld({ mode, characterIndex = 0, classId = null, difficulty = null, laps = RACE.laps, trackId = TRACKS[0]?.id, gameMode = 'vs', roster = null, gridIds = null }) {

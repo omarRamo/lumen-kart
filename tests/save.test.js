@@ -134,6 +134,11 @@ test('settings sanitize, steering assist defaults and quality presets', () => {
   assert.ok(!assistFor(s, '150cc'));
   assert.ok(assistFor({ assist: 'on' }, '200cc'));
   assert.ok(!assistFor({ assist: 'off' }, '50cc'));
+  // QA polish: 'auto' also helps touch players in 100cc, never keyboard / gamepad players from 100cc up
+  assert.ok(!assistFor(s, '100cc'), '100cc keyboard/gamepad: off');
+  assert.ok(assistFor(s, '100cc', ['50cc'], { touch: true }), '100cc touch: on');
+  assert.ok(!assistFor(s, '150cc', ['50cc'], { touch: true }), '150cc touch: off');
+  assert.ok(!assistFor({ assist: 'off' }, '100cc', ['50cc'], { touch: true }));
   assert.equal(resolveQuality('low', {}), 'low');
   assert.equal(resolveQuality('auto', { mobile: false }), 'high');
   assert.equal(resolveQuality('auto', { mobile: true, memory: 8, cores: 8 }), 'medium');

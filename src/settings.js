@@ -54,10 +54,15 @@ export function saveSettings(storage, settings) {
   try { storage?.setItem(SETTINGS_KEY, JSON.stringify(sanitizeSettings(settings))); } catch { /* quota / private mode */ }
 }
 
-/** Steering assist on/off for a given engine class. */
-export function assistFor(settings, classId, autoClasses = ['50cc']) {
+/**
+ * Steering assist on/off for a given engine class. 'auto' = on in 50cc for everybody and, for touch players
+ * (thumbs on glass, auto-throttle), also in 100cc; keyboard / gamepad players keep it off from 100cc up.
+ */
+export function assistFor(settings, classId, autoClasses = ['50cc'], { touch = false, touchClasses = ['50cc', '100cc'] } = {}) {
   const a = settings?.assist || 'auto';
-  return a === 'on' || (a === 'auto' && autoClasses.includes(classId));
+  if (a === 'on') return true;
+  if (a !== 'auto') return false;
+  return autoClasses.includes(classId) || (touch && touchClasses.includes(classId));
 }
 
 /** Resolve 'auto' quality from the device. env = { mobile, memory, cores }. */
