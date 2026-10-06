@@ -246,7 +246,7 @@ export class HUD {
     if (!this._fpsOn) return;
     const f = this._fps;
     f.frames++; f.time += rawDt;
-    if (f.time >= 0.5) { this.fpsEl.textContent = `${Math.round(f.frames / f.time)} i/s`; f.frames = 0; f.time = 0; }
+    if (f.time >= 0.5) { this.fpsEl.textContent = t('hud.fps', { n: Math.round(f.frames / f.time) }); f.frames = 0; f.time = 0; }
   }
 
   /** Celebration cards for unlocks / medals, queued one after another. */

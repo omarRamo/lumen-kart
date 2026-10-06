@@ -161,3 +161,26 @@ test('settings-driven tilt does not echo back, a toolbar toggle reports the new 
     if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow;
   }
 });
+
+test('Escape in the pause settings goes back to the pause menu and is not handled twice (QA)', () => {
+  const hadDocument = 'document' in globalThis;
+  const prevDocument = globalThis.document;
+  globalThis.document = { body: { classList: { add() {}, contains: () => false }, dataset: {} } };
+  try {
+    let resumed = 0;
+    const menu = Object.assign(Object.create(Menu.prototype), {
+      screen: 'settings', settingsReturn: 'pause', h: { onResume: () => { resumed++; } },
+      _show(name) { this.screen = name; },
+    });
+    let stopped = 0;
+    const key = (code) => ({ code, repeat: false, target: {}, preventDefault() {}, stopImmediatePropagation() { stopped++; } });
+    menu._key(key('Escape'));
+    assert.equal(menu.screen, 'pause', 'settings -> pause');
+    assert.equal(stopped, 1, 'main.js must not also treat this Escape as "resume"');
+    assert.equal(resumed, 0);
+    menu._key(key('Escape'));
+    assert.equal(stopped, 1, 'Escape on the pause menu itself is left to main.js (resume)');
+  } finally {
+    if (hadDocument) globalThis.document = prevDocument; else delete globalThis.document;
+  }
+});

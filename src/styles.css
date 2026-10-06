@@ -368,6 +368,8 @@ input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 
 
 /* ================================================================ HUD */
 .hud { position: absolute; inset: 0; pointer-events: none; font-family: var(--body); color: var(--ink); }
+/* Full-screen menus opened from the pause menu: the race HUD pills sat under the header (Back button, title). */
+body[data-menu="settings"] .hud, body[data-menu="credits"] .hud { visibility: hidden; }
 .hud.shake { animation: shake .45s ease; }
 @keyframes shake { 15% { transform: translate(-6px, 3px); } 30% { transform: translate(5px, -3px); } 50% { transform: translate(-3px, 2px); } 70% { transform: translate(2px, -1px); } }
 .hud-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: var(--glass); border: 1px solid rgba(255, 255, 255, .75); box-shadow: var(--shadow-sm); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }

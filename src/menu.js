@@ -172,12 +172,13 @@ export class Menu {
     this.els.loading.querySelector('.loading-text').textContent = text;
     this._show('loading', false);
   }
-  hideAll() { this.screen = null; this._showOnly(null); }
+  hideAll() { this.screen = null; this._showOnly(null); document.body.dataset.menu = ''; }
   refresh() { if (this.screen && this.screen !== 'loading') this._render(this.screen, true); }
 
   _show(name, render = true) {
     const prev = this.screen;
     this.screen = name;
+    document.body.dataset.menu = name || '';
     if (render) this._render(name);
     this._showOnly(this.els[name]);
     if (prev !== name) this._setFocus(this._defaultFocus(), { silent: true });
@@ -606,7 +607,10 @@ export class Menu {
     }
     if (back && !e.repeat) {
       if (this.screen === 'pause' && c === 'Escape') return; // main.js handles Escape -> resume
-      this.back(); return;
+      // Handled here: main.js must not see the same Escape once the screen changed (settings opened from the
+      // pause menu went back to "pause" and main.js then resumed the race on that very key press).
+      if (this.back()) e.stopImmediatePropagation();
+      return;
     }
     if (left) this._move(-1, 0);
     else if (right) this._move(1, 0);
