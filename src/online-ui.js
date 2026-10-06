@@ -11,7 +11,7 @@ export class OnlineUI {
     const inviteServer=new URL(location.href).searchParams.get('server');
     if(inviteServer) this.serverURL=validServer(inviteServer)||undefined;
     else try { this.serverURL=validServer(localStorage.getItem('tkr-server'))||undefined; } catch {}
-    this.options={name:'Racer',character:'blaze',config:{trackId:'palm-cove',difficulty:'medium',laps:3},...options};
+    this.options={name:'Racer',character:'lumen',config:{trackId:'palm-cove',difficulty:'medium',laps:3},...options};
     this.panel=document.createElement('section');this.panel.className='online-overlay';this.root.append(this.panel);this.render();
   }
   render(message='') {

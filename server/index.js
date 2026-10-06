@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const TRACKS = new Set(['palm-cove', 'frosty-peaks', 'sunset-canyon', 'lava-keep', 'alpine-rush', 'neon-harbor']);
-const CHARS = new Set(['blaze','zippy','bella','toadly','rex','grumbo','koopz','dotty']);
+const CHARS = new Set(['lumen','zina','pip','coralie','rivo','jagu','kibo','nox']);
 const fail = message => { throw new Error(message); };
 const finite = (n, lo, hi) => typeof n === 'number' && Number.isFinite(n) && n >= lo && n <= hi;
 function config(value = {}) {
@@ -18,7 +18,7 @@ function config(value = {}) {
 }
 function profile(value) {
   const name = typeof value.name === 'string' ? value.name.trim().replace(/[\x00-\x1f<>]/g, '').slice(0, 20) : 'Racer';
-  const character = typeof value.character === 'number' ? [...CHARS][value.character] : value.character || 'blaze';
+  const character = typeof value.character === 'number' ? [...CHARS][value.character] : value.character || 'lumen';
   if (!CHARS.has(character)) fail('Invalid character');
   return { name: name || 'Racer', character };
 }

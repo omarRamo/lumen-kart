@@ -1,6 +1,6 @@
 // Shared tuning + roster. Every module reads from here; do not duplicate these values.
 
-export const GAME_TITLE = 'Turbo Kart Rally';
+export const GAME_TITLE = 'Lumen Kart';
 
 export const RACE = {
   laps: 3,
@@ -31,14 +31,15 @@ export const PHYSICS = {
 // stats are 1..5. speed -> top speed, accel -> acceleration, handling -> turn rate/drift,
 // weight -> bump resolution (heavier pushes lighter).
 export const CHARACTERS = [
-  { id: 'blaze',  name: 'Blaze',  color: 0xe53935, accent: 0xffffff, skin: 0xffcc99, hat: 'cap',     stats: { speed: 3, accel: 3, handling: 3, weight: 3 } },
-  { id: 'zippy',  name: 'Zippy',  color: 0x43a047, accent: 0xffffff, skin: 0xffcc99, hat: 'cap',     stats: { speed: 3, accel: 4, handling: 3, weight: 2 } },
-  { id: 'bella',  name: 'Bella',  color: 0xf06292, accent: 0xfff176, skin: 0xffe0bd, hat: 'crown',   stats: { speed: 2, accel: 4, handling: 5, weight: 2 } },
-  { id: 'toadly', name: 'Toadly', color: 0x1e88e5, accent: 0xffffff, skin: 0xffe0bd, hat: 'mushroom',stats: { speed: 2, accel: 5, handling: 4, weight: 1 } },
-  { id: 'rex',    name: 'Rex',    color: 0x2e7d32, accent: 0xff8f00, skin: 0x9ccc65, hat: 'horns',   stats: { speed: 5, accel: 1, handling: 2, weight: 5 } },
-  { id: 'grumbo', name: 'Grumbo', color: 0xfdd835, accent: 0x6a1b9a, skin: 0xffcc99, hat: 'cap',     stats: { speed: 4, accel: 2, handling: 2, weight: 4 } },
-  { id: 'koopz',  name: 'Koopz',  color: 0x00acc1, accent: 0xfff9c4, skin: 0xaed581, hat: 'shell',   stats: { speed: 3, accel: 3, handling: 4, weight: 2 } },
-  { id: 'dotty',  name: 'Dotty',  color: 0x8e24aa, accent: 0xffeb3b, skin: 0xffe0bd, hat: 'bow',     stats: { speed: 2, accel: 4, handling: 4, weight: 1 } },
+  // `species` drives the driver model in models.js; `title` is the bilingual tagline shown in menus.
+  { id: 'lumen', name: 'Lumen', species: 'fox',     color: 0x387d76, accent: 0xe98c73, skin: 0xfff7dc, hat: 'leaves', title: { fr: 'Le petit renard à l’écharpe', en: 'The little fox with the scarf' }, stats: { speed: 3, accel: 3, handling: 4, weight: 3 } },
+  { id: 'zina',  name: 'Zina',  species: 'fennec',  color: 0xd9a35b, accent: 0x2f8fc7, skin: 0xf6e3c2, hat: 'chechia', title: { fr: 'Fennec de Tozeur', en: 'Fennec from Tozeur' }, stats: { speed: 2, accel: 4, handling: 5, weight: 1 } },
+  { id: 'pip',   name: 'Pip',   species: 'raccoon', color: 0x6d7b8c, accent: 0xf2c14e, skin: 0xd8d2c8, hat: 'cap',     title: { fr: 'Raton des toits de la Ville', en: 'Rooftop raccoon of the City' }, stats: { speed: 3, accel: 4, handling: 3, weight: 2 } },
+  { id: 'coralie', name: 'Coralie', species: 'crab', color: 0xe8604c, accent: 0x7fd6d0, skin: 0xff9a7a, hat: 'shell', title: { fr: 'Crabe des Lagons', en: 'Lagoon crab' }, stats: { speed: 2, accel: 5, handling: 4, weight: 2 } },
+  { id: 'rivo',  name: 'Rivo',  species: 'frog',    color: 0x47b36b, accent: 0xffd23f, skin: 0x9be08a, hat: 'leafcap', title: { fr: 'Grenouille d’Amazonie', en: 'Amazon tree frog' }, stats: { speed: 3, accel: 4, handling: 4, weight: 1 } },
+  { id: 'jagu',  name: 'Jagu',  species: 'jaguar',  color: 0xe0a23a, accent: 0x2b2b2b, skin: 0xf3d9a4, hat: 'goggles', title: { fr: 'Jaguar de la canopée', en: 'Canopy jaguar' }, stats: { speed: 5, accel: 2, handling: 3, weight: 3 } },
+  { id: 'kibo',  name: 'Kibo',  species: 'lion',    color: 0xc98a3c, accent: 0x8b3a2b, skin: 0xf0c987, hat: 'mane',    title: { fr: 'Lionceau de la savane', en: 'Savanna lion cub' }, stats: { speed: 4, accel: 2, handling: 2, weight: 5 } },
+  { id: 'nox',   name: 'Nox',   species: 'night',   color: 0x2b2160, accent: 0xb7a6ff, skin: 0x433a8a, hat: 'stars',   title: { fr: 'La Nuit qui revient', en: 'The returning Night' }, stats: { speed: 5, accel: 1, handling: 2, weight: 5 } },
 ];
 
 export const ITEMS = ['coin', 'banana', 'triple_banana', 'green_shell', 'triple_green', 'red_shell', 'mushroom', 'triple_mushroom',

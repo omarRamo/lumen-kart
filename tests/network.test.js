@@ -15,9 +15,9 @@ const controls={throttle:1,brake:0,steer:-.4,drift:true,item:true,itemHeld:true}
 test('private room, ready gate, synchronized roster, inputs, host snapshot and departure',async t=>{
   const relay=createRelay({port:0,host:'127.0.0.1'});const address=await relay.listen();t.after(()=>relay.close());
   const url=`ws://127.0.0.1:${address.port}/ws`;const a=await peer(url);const b=await peer(url);
-  a.send({type:'create',name:'Host',character:'blaze',config:settings});const first=(await a.next('room')).room;
+  a.send({type:'create',name:'Host',character:'lumen',config:settings});const first=(await a.next('room')).room;
   assert.match(first.code,/^[A-Z0-9]{6}$/);assert.equal(first.public,false);
-  b.send({type:'join',code:first.code,name:'Guest',character:'bella'});const joined=(await b.next('room')).room;await a.next('room');
+  b.send({type:'join',code:first.code,name:'Guest',character:'zina'});const joined=(await b.next('room')).room;await a.next('room');
   assert.equal(joined.players.length,2);assert.deepEqual(joined.config,settings);
   b.send({type:'start'});assert.match((await b.next('error')).message,/Only the host/);
   a.send({type:'start'});assert.match((await a.next('error')).message,/ready/);
