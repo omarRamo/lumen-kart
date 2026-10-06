@@ -1086,7 +1086,10 @@ boot();
 // ---------------------------------------------------------------------------------------------
 // Debug / test hook
 // ---------------------------------------------------------------------------------------------
-window.__game = {
+// Test / tooling hook, never shipped to players: only in `vite dev` (also reachable as ?debug there) or in a
+// bundle built with VITE_E2E=1 (Playwright's .e2e-dist, the store screenshot build). Statically false in the
+// store build, so the whole object is tree-shaken away.
+if (import.meta.env.DEV || import.meta.env.VITE_E2E === '1') window.__game = {
   get state() { return state; },
   get world() { return world; },
   get mods() { return mods; },

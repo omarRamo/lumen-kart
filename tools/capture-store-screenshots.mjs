@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-// Lumen Kart — App Store / Google Play screenshots, captured from the real production build.
+// Lumen Kart — App Store / Google Play screenshots, captured from the production code.
 //
-//   npm run build && npm run store:screenshots
-//   node tools/capture-store-screenshots.mjs --only=ios-6.9,play-phone --lang=fr-FR --out=store/screenshots
+//   npm run store:screenshots
+//   node tools/capture-store-screenshots.mjs --only=ios-6.9,play-phone --lang=fr-FR --out=store/screenshots [--no-build]
 //
-// Serves dist/ with the bundled relay (server/index.js, no extra dependency), opens it in Chromium
+// Builds the game into .store-dist/ exactly like the store build (no VITE_WS_URL) plus VITE_E2E=1, which only
+// exposes the window.__game hook the capture needs (dist/ itself never contains it). Serves that bundle with
+// the bundled relay (server/index.js, no extra dependency), opens it in Chromium
 // (local Google Chrome when installed, else Playwright's) with a touch/mobile context at each store size,
 // and drives the game through window.__game (startRace / skipIntro / fastForward / debug.autopilot).
 // Output: store/screenshots/<lang>/<device>/NN-<scene>.png (git-ignored: regenerate before each upload).
 import { chromium } from '@playwright/test';
 import { existsSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRelay } from '../server/index.js';
@@ -43,12 +46,14 @@ const only = args.only ? args.only.split(',') : Object.keys(DEVICES);
 const langs = (args.lang || 'fr-FR,en-US').split(',');
 const outDir = resolve(root, args.out || 'store/screenshots');
 
-if (!existsSync(join(root, 'dist/index.html'))) {
-  console.error('dist/ is missing: run `npm run build` first.');
-  process.exit(1);
+const bundleDir = join(root, '.store-dist');
+if (!args['no-build'] || !existsSync(join(bundleDir, 'index.html'))) {
+  const env = { ...process.env, VITE_E2E: '1' };
+  delete env.VITE_WS_URL; // same as the store build: online mode hidden
+  execFileSync('npx', ['vite', 'build', '--outDir', '.store-dist', '--emptyOutDir', '--logLevel', 'warn'], { cwd: root, env, stdio: 'inherit' });
 }
 
-const relay = createRelay({ port: 0, host: '127.0.0.1', staticDir: join(root, 'dist') });
+const relay = createRelay({ port: 0, host: '127.0.0.1', staticDir: bundleDir });
 const { port } = await relay.listen();
 const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const browser = await chromium.launch({
@@ -74,6 +79,8 @@ try {
       page.on('pageerror', e => errors.push(e.message));
       await page.goto(`http://127.0.0.1:${port}/`);
       await page.waitForFunction(() => window.__game?.state === 'title', null, { timeout: 45000 });
+      // Store shots show the game, not the first-race tutorial bubbles.
+      await page.evaluate(() => { const tut = window.__game.save?.tutorial; if (tut) for (const k of Object.keys(tut)) tut[k] = true; });
       await page.waitForTimeout(1200);
       const folder = join(outDir, lang, id);
       mkdirSync(folder, { recursive: true });

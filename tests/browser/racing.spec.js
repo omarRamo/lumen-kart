@@ -239,10 +239,18 @@ test('Grand Prix: four races through the standings to the podium', async ({ brow
   }
   await expect(page.locator('.results.podium-screen')).toBeVisible({ timeout: 15000 });
   await expect(page.locator('.podium')).toBeVisible();
+  // a first gold in the Dawn Cup unlocks the trophy and the Dusk Cup: ONE collapsed card, dismissed by a tap
+  await expect(page.locator('.unlock-card')).toHaveCount(1, { timeout: 5000 });
+  await expect(page.locator('.unlock-card b')).toHaveCount(2);
   await page.screenshot({ path: 'test-results/gp-podium.png' });
+  await page.locator('.unlock-card').click();
+  await expect(page.locator('.unlock-card')).toHaveCount(0, { timeout: 2000 });
   await page.getByTestId('results-done').click();
   await expect.poll(() => gameState(page), { timeout: 15000 }).toBe('title');
   expect(await page.evaluate(() => window.__game.gp)).toBeNull();
+  // celebrations never spill into the next screens
+  await page.getByTestId('title-play').click();
+  await expect(page.locator('.unlock-card')).toHaveCount(0);
   await expectNoGameErrors(page, errors);
   await context.close();
 });

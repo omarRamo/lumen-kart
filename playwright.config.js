@@ -21,7 +21,8 @@ export default defineConfig({
     // kept out of dist/ so the native/store build is never polluted by a test relay URL.
     {
       command: 'npx vite build --outDir .e2e-dist --emptyOutDir && npx vite preview --outDir .e2e-dist --host 127.0.0.1 --port 4173 --strictPort',
-      env: { VITE_WS_URL: 'ws://127.0.0.1:8787/ws' },
+      // VITE_E2E=1 exposes the window.__game test hook (absent from the store build).
+      env: { VITE_WS_URL: 'ws://127.0.0.1:8787/ws', VITE_E2E: '1' },
       url: 'http://127.0.0.1:4173',
       reuseExistingServer: false,
       timeout: 120000,

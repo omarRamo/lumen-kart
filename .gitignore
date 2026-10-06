@@ -8,6 +8,7 @@ dist/
 !.env.example
 playwright-report/
 .e2e-dist/
+.store-dist/
 test-results/
 
 # Native build outputs (the ios/ and android/ projects themselves are committed)
