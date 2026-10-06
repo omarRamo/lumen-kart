@@ -609,7 +609,16 @@ body[data-menu="settings"] .hud, body[data-menu="credits"] .hud { visibility: hi
 }
 @media (max-height: 640px) {
   .podium { min-height: 180px; }
-  .pod-col.p1 .pod-block { height: 80px; } .pod-col.p2 .pod-block { height: 58px; } .pod-col.p3 .pod-block { height: 40px; }
+  .pod-col.p1 .pod-block { height: 80px; } .pod-col.p2 .pod-block { height: 58px; } .pod-col.p3 .pod-block { height: 44px; }
+  .pod-block span { font-size: 30px; line-height: 1; } /* the 40 px "3" overflowed the 40 px third step on phones */
+}
+/* color-mix() needs Safari 16.2 / Chrome 111. On older WebViews (iOS 15-16.1 is supported) a declaration using it
+   computes to "unset" (var() inside), which left the position badge and podium steps without any background. */
+@supports not (color: color-mix(in srgb, red 50%, white)) {
+  .pod-block, .hud-place, .fin-place, .char-portrait, .cp-portrait { background: var(--kc, var(--pc)); }
+  .hud-place, .fin-place { background: var(--pc); }
+  .cup-card::before { background: var(--cup); }
+  .char-card.selected { box-shadow: 0 0 0 3px var(--gold), var(--shadow-sm); }
 }
 body.reduce-motion .logo-emblem svg, body.reduce-motion .logo-spark, body.reduce-motion .hero-btn, body.reduce-motion .loading-emblem svg, body.reduce-motion .confetti i, body.reduce-motion .hud.shake { animation: none !important; }
 @media (prefers-reduced-motion: reduce) {
