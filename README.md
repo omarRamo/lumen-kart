@@ -3,6 +3,9 @@
 **Un jeu de kart arcade en 3D avec Lumen, le petit renard à l'écharpe.**
 Hors ligne, sans compte, sans publicité, sans traçage — pour iOS, Android et le web.
 
+▶ **[Jouer dans le navigateur](https://omarramo.github.io/lumen-kart/)** — version web publiée automatiquement sur
+GitHub Pages à chaque push sur `main` (téléphone en paysage ou ordinateur : flèches/WASD, Espace drift, E objet).
+
 ![Lumen Kart — Prairies d'aurore](docs/screenshots/track-meadow.png)
 
 Lumen, héros du jeu de plateforme LUMEN, dispute des Grands Prix à travers huit mondes lumineux : prairies d'aurore,

@@ -567,6 +567,11 @@ Aide au débogage (uniquement en `npm run dev` ou dans un build `VITE_E2E=1` —
 | `verify.yml` | push `main`, PR, manuel | `npm ci`, `npm test`, `npm run store:check`, `npm run build`, artefact `dist/` ; job Playwright optionnel (manuel) |
 | `android.yml` | push `main`, tags `v*`, PR touchant le natif, manuel | tests, build, `cap sync android`, APK debug ; AAB signé + vérification `jarsigner` si les secrets existent ; `versionCode` = numéro de run |
 | `ios.yml` | push `main`, tags `v*`, manuel | tests, build, `cap sync ios`, build simulateur non signé (TestFlight automatisé non inclus) |
+| `pages.yml` | push `main`, manuel | `npm ci`, `npm test`, `npm run build` (build boutique : sans `VITE_WS_URL` ni `VITE_E2E`), puis déploiement de `dist/` sur **GitHub Pages** → <https://omarramo.github.io/lumen-kart/> |
+
+**Version web jouable.** Grâce à `base: './'` dans `vite.config.js`, le même bundle fonctionne à la racine, dans
+Capacitor et sous le sous-chemin `/lumen-kart/` de GitHub Pages (chemins relatifs vérifiés : scripts, polices,
+icônes, manifeste PWA). Le site est servi en HTTPS, ce qui permet aussi l'inclinaison (capteurs) sur mobile.
 
 ---
 
