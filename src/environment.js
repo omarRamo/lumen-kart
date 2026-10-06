@@ -634,7 +634,9 @@ export function createEnvironment(scene, renderer, root, L) {
       ring(26, 950, 1450, (r) => {
         const rad = 30 + r() * 70, hgt = 60 + r() * 90;
         const parts = [
-          paint(new THREE.ConeGeometry(rad, hgt, 8, 2).rotateX(Math.PI).translate(0, -hgt / 2, 0), cNear.clone().lerp(haze, 0.3)),
+          // QA: the downward cones only get the dim hemisphere ground light and read as black holes in the
+          // indigo sky ("never dark, even in the Night"): start from a lavender-tinted rock.
+          paint(new THREE.ConeGeometry(rad, hgt, 8, 2).rotateX(Math.PI).translate(0, -hgt / 2, 0), cNear.clone().lerp(cFar, 0.45).lerp(haze, 0.35)),
           paint(new THREE.CylinderGeometry(rad * 1.02, rad * 0.98, 6, 8).translate(0, 2, 0), cMid.clone().lerp(haze, 0.25)),
         ];
         if (r() < 0.6) parts.push(paint(new THREE.OctahedronGeometry(8 + r() * 10, 0).scale(0.6, 2.4, 0.6).translate((r() - 0.5) * rad, 20, (r() - 0.5) * rad), cFar.clone().lerp(haze, 0.15)));
