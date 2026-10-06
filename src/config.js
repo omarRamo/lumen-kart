@@ -66,7 +66,7 @@ export const ITEMS = ['coin', 'banana', 'triple_banana', 'green_shell', 'triple_
 // rubberBandBehind/Ahead: max extra/less top speed when an AI is behind/ahead of the player (fraction).
 // driftChargeMul: mini-turbo charge speed for every kart of the race (50/100cc are more generous).
 export const DIFFICULTY = {
-  easy:    { aiSpeedFactor: 0.9, aiSkill: 0.55, rubberBand: 0.03, rubberBandBehind: 0.03, rubberBandAhead: 0.07, driftChargeMul: 1.3, speedFactor: 1, handlingFactor: 1, accelFactor: 1 },
+  easy:    { aiSpeedFactor: 0.86, aiSkill: 0.55, rubberBand: 0.03, rubberBandBehind: 0.03, rubberBandAhead: 0.09, driftChargeMul: 1.3, speedFactor: 1, handlingFactor: 1, accelFactor: 1 },
   normal:  { aiSpeedFactor: 0.95, aiSkill: 0.75, rubberBand: 0.08, rubberBandBehind: 0.08, rubberBandAhead: 0.05, driftChargeMul: 1.15, speedFactor: 1, handlingFactor: 1, accelFactor: 1 },
   hard:    { aiSpeedFactor: 0.99, aiSkill: 0.95, rubberBand: 0.12, rubberBandBehind: 0.12, rubberBandAhead: 0.035, driftChargeMul: 1.0, speedFactor: 1, handlingFactor: 1, accelFactor: 1 },
   extreme: { aiSpeedFactor: 1.00, aiSkill: 1.0, rubberBand: 0.12, rubberBandBehind: 0.12, rubberBandAhead: 0.02, driftChargeMul: 1.0, speedFactor: 1, handlingFactor: 1, accelFactor: 1 },

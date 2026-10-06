@@ -301,7 +301,7 @@ export class AIDriver {
 
   /**
    * Fair rubber-banding per class: at 50cc an AI behind the player gets at most +3 % (no blatant catch-up) while
-   * AIs ahead ease off up to -11 % so a young player can come back; at 150/200cc AIs behind push up to +12 % and the
+   * AIs ahead ease off up to -9 % so a young player can come back; at 150/200cc AIs behind push up to +12 % and the
    * leaders barely lift (-2..-3.5 %) so the fight is real. Smoothed so speed never jumps.
    */
   _rubberBand(ctx, dt = 1 / 60) {
