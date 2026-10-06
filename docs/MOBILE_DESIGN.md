@@ -1,22 +1,81 @@
-# Mobile cockpit
+# Cockpit mobile et rendu sur téléphone
 
-The interface uses a landscape racing cockpit inspired by mobile arcade racers while keeping Turbo Kart Rally's existing characters and visual identity.
+Lumen Kart est conçu **mobile d'abord** : paysage, une main par côté, centre de l'écran libre pour la piste.
+Fichiers : `src/mobile-controls.js`, `src/mobile.css`, `src/hud.js`, `src/native-motion.js`, `src/settings.js`.
+Rapport détaillé de l'agent UX : [`agents/ux.md`](agents/ux.md).
 
-- Top left: lap and timer. Top center: held item. Top right: motion control, recalibration and pause.
-- Bottom left: large steer buttons; the minimap sits above them.
-- Bottom right: item and drift under the right thumb, with brake beside drift. Position remains above these controls.
-- The center stays available for the track and opponents. Automatic throttle removes the need to hold an accelerator.
-- Buttons use at least 44-pixel touch targets, multi-touch pointer capture, and safe-area offsets for device cutouts. Interrupted touches are released on cancellation, blur and state changes.
-- Portrait browser layouts rearrange character selection and race controls; native apps request landscape.
+![Cockpit mobile 844×390 (FR)](screenshots/ui-hud-mobile-fr.png)
 
-Native tilt uses CoreMotion on iOS and Android gravity sensors (with a filtered accelerometer fallback), projected into screen orientation. The browser uses device orientation events. Permission is requested from a player tap, never at page load. The first sensor reading becomes neutral; a deadzone filters small movements and full steering is reached at a 24-degree relative tilt. Touch steering overrides the sensor. A denied permission or absent sensor leaves the touch controls usable. Calibration is reset when screen orientation changes.
+## Disposition (paysage)
 
-Mobile rendering caps pixel ratio at 1.25 and disables bloom to preserve more frame time. Physics runs in fixed 1/60-second steps with bounded catch-up, independently of rendering. Physical-device frame rate and ergonomics need validation before a store release.
+| Zone | Contenu |
+|---|---|
+| Haut gauche | pilules « Tour 2/3 » (corail au dernier tour), chrono, **♪ 7/10** (doré à 10), record en contre-la-montre |
+| Haut centre | emplacement d'objet (roulette, ×3) et nom de l'objet à la prise ; astuces de premier lancement |
+| Haut droite | **GYRO** (inclinaison oui/non), recentrer, pause |
+| Bas gauche | **pilule de direction** ‹ › à curseur ; mini-carte au-dessus |
+| Bas droite | **Objet** (icône de l'objet tenu), **Drift** (jauge de charge en 3 segments), **Frein** ; badge de position au-dessus |
 
-## Browser captures
+- **Accélération automatique** dès le « Partez ! » ; elle est exclue de la détection du départ fusée, donc jamais
+  pénalisante pendant le compte à rebours.
+- Style « disques de verre » de LUMEN ; cibles **≥ 48 px** ; multi-touch avec capture de pointeur ; tout appui
+  interrompu (annulation, perte de focus, changement d'état) est relâché.
+- Annonces (figure, aspiration, ultra mini-turbo…) placées **sous** le kart pour libérer le centre.
+- Zones sûres : `env(safe-area-inset-*)` **et** `--safe-area-inset-*` injectées par Capacitor sur Android.
+- Vérifié sans chevauchement à 844×390, 932×430, 667×375, 568×320 (iPhone SE 1re gén., badge de position réduit)
+  et 320×568 ; la suite Playwright garde ces tailles sous surveillance.
+- Les navigateurs en portrait ont une mise en page dédiée (choix du pilote, cockpit) ; les apps natives sont
+  verrouillées en paysage.
 
-![Landscape character and mode selection](screenshots/mobile-landscape-menu.png)
+| Portrait 320×568 (navigateur) | Contre-la-montre 844×390 |
+|---|---|
+| ![Portrait](screenshots/ui-portrait-320x568.png) | ![Cockpit CLM](screenshots/ui-cockpit-tt-844x390.png) |
 
-![Portrait character and mode selection](screenshots/mobile-portrait-menu.png)
+## Direction
 
-![Neon Harbor mobile cockpit](screenshots/neon-harbor-mobile.png)
+- **Tactile** (défaut) : glisser le curseur de la pilule ; zone morte de 6 px, plein braquage à 60 px, courbe
+  progressive. La rampe de direction du kart joueur (0,09 s) adoucit les entrées numériques.
+- **Inclinaison** (réglage « Direction » ou bouton GYRO) : CoreMotion sur iOS et capteur de gravité Android (repli
+  accéléromètre filtré) via le plugin natif `TiltMotion` ; `DeviceOrientation` dans le navigateur (HTTPS ou localhost).
+  L'autorisation est demandée depuis un geste du joueur (« C'est parti ! »), jamais au chargement. La première lecture
+  devient le neutre ; zone morte de 2°, plein braquage à **24°** d'inclinaison relative ; recalibrage au changement
+  d'orientation ou via le bouton recentrer. Le tactile reste prioritaire et toujours disponible (autorisation refusée,
+  capteur absent).
+- **Aide à la direction** : Auto (50cc) / Toujours / Jamais — voir [`GAMEPLAY.md`](GAMEPLAY.md#aide-à-la-direction).
+
+## Comportement d'app mobile
+
+- Pause automatique sur `visibilitychange`, `pagehide` et `App.pause` ; l'AudioContext est suspendu en arrière-plan
+  et repris au retour ; l'audio est débloqué au premier appui.
+- **Bouton retour Android** : menus → écran précédent ; course → pause ; pause → reprise ; titre → quitter.
+- Zoom, défilement, appui long et menus contextuels bloqués (`user-scalable=no`, `touch-action`,
+  `-webkit-touch-callout`, `gesturestart`).
+- **Vibrations** (réglage « Vibrations ») sur les chocs, mini-turbos, boosts, atterrissages et objets qui touchent,
+  limitées à une toutes les 60–90 ms.
+
+## Rendu et performances
+
+La physique tourne par pas fixes de 1/60 s, indépendamment du rendu. Le rendu s'adapte à l'appareil :
+
+| Qualité | Pixel ratio (mobile) | Ombres | Bloom | Karts | Décor |
+|---|---|---|---|---|---|
+| Haute | ≤ 1,5 | douces | non (bureau seulement) | ≤ 12 k triangles | 100 % |
+| Moyenne | ≤ 1,25 | PCF | non | ≤ 6 k triangles | 60 % |
+| Basse | ≤ 1 | aucune (ombres-disques) | non | ≤ 3 k triangles | 35 % |
+
+- **Auto** (défaut) : téléphone → Moyenne, ou Basse si ≤ 3 Go de RAM ou ≤ 4 cœurs. En course, sous 40 i/s pendant 4 s,
+  la résolution baisse par paliers de 15 % (jusqu'à 60 %).
+- **Réduire les effets** : pas de lignes de vitesse, secousses de caméra à 25 %, animations d'interface coupées.
+- « Afficher les i/s » affiche un compteur discret pour les tests sur appareil.
+- Natif : écran maintenu allumé, 120 Hz autorisé sur iPhone ProMotion, mode performance soutenue sur Android.
+
+La fréquence d'images et l'ergonomie sur **appareils physiques** restent à valider avant la soumission
+(check-list : [`../store/RELEASE_CHECKLIST.md`](../store/RELEASE_CHECKLIST.md)).
+
+## Autres captures
+
+| Titre | Modes | Résultats |
+|---|---|---|
+| ![](screenshots/ui-title-mobile-fr.png) | ![](screenshots/ui-mode-mobile-fr.png) | ![](screenshots/ui-results-mobile-fr.png) |
+| **Pause** | **Réglages** | **Crédits** |
+| ![](screenshots/ui-pause-mobile-fr.png) | ![](screenshots/ui-settings-mobile-fr.png) | ![](screenshots/ui-credits-mobile-fr.png) |

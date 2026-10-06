@@ -1,58 +1,109 @@
-# iOS and Android
+# iOS et Android (Capacitor 8)
 
-The same Vite bundle runs in browsers and Capacitor 8 native shells. Three.js 0.170.0 and all game assets ship inside the app. Fonts use the existing local system fallbacks; no font or JavaScript CDN connection is required for solo play.
+Le même bundle Vite tourne dans le navigateur et dans les coques natives Capacitor 8. Three.js 0.170.0, les polices et
+toutes les ressources du jeu sont **embarqués dans l'app** : aucune connexion n'est nécessaire pour jouer en solo.
+Rapport détaillé de l'agent Plateforme : [`agents/platform.md`](agents/platform.md). Publication :
+[`../store/RELEASE_CHECKLIST.md`](../store/RELEASE_CHECKLIST.md).
 
-## Build and run
+## Identité
 
-Requires Node.js 22.12 or later.
+| | Valeur |
+|---|---|
+| Nom | **Lumen Kart** (localisé fr/en sur iOS) |
+| Identifiant (`appId` / `applicationId` / bundle ID) | **`com.omartrabelsi.lumenkart`** |
+| Version | `package.json` `version` (1.0.0) → `versionName` Android et `__APP_VERSION__` ; `MARKETING_VERSION` Xcode à garder égal (vérifié par `npm run store:check`) |
+| Build | iOS build 1 ; Android `versionCode` 1 en local, numéro de run en CI |
+| Couleur de fond | `#1f4f4c` (WebView, splash, icône adaptative, PWA) |
+| Cibles | iOS 15+ (iPhone et iPad) · Android minSdk 24, targetSdk/compileSdk 36 |
+
+## Construire et lancer
+
+Prérequis : Node.js ≥ 22.12 ; Xcode 26 ou plus récent (vérifié avec Xcode 27) ; Android Studio avec JDK 21 et SDK 36.
 
 ```sh
 npm ci
-npm run dev          # browser development, including LAN access
-npm run server       # multiplayer WebSocket service
-npm test
-npm run native:sync  # production build, then copy into both native projects
-npm run native:ios   # sync, then open Xcode
-npm run native:android # sync, then open Android Studio
+npm run native:sync     # build de production + cap sync (iOS et Android) — à relancer après tout changement JS/CSS/config
+npm run ios             # sync puis ouvre Xcode (alias : npm run native:ios)
+npm run android         # sync puis ouvre Android Studio (alias : npm run native:android)
+npm run ios:simulator   # build simulateur non signé (xcodebuild, CODE_SIGNING_ALLOWED=NO, ios/DerivedData)
+npm run android:apk     # APK debug → android/app/build/outputs/apk/debug/
+npm run android:bundle  # AAB release signé → android/app/build/outputs/bundle/release/app-release.aab
 ```
 
-Run `native:sync` after changing JavaScript, CSS, or Capacitor settings, before any native build. Generated web assets are ignored by Git and rebuilt from source. Neither app depends on a Vite dev server.
+Les fichiers générés par `cap sync` (`public/`, `capacitor.config.json`, `capacitor.plugins.json` dans les projets
+natifs) sont ignorés par git : **toujours lancer `npm run native:sync` avant un build natif** (la CI le fait).
 
-## iOS
+## iOS (`ios/App`)
 
-Open `ios/App/App.xcodeproj` with Xcode 26 or later. Swift Package Manager resolves the pinned Capacitor runtime. The app supports iOS 15+ and landscape in both directions, including full-screen iPad operation. Choose a signing team and an available bundle identifier before installing on a physical device or archiving for distribution. The checked-in identifier is `com.turbokartrally.game`.
+- Projet Xcode en **Swift Package Manager** (pas de CocoaPods), cible *App*.
+- `Info.plist` : **paysage uniquement** (iPhone et iPad), plein écran, barre d'état masquée, style clair,
+  `CADisableMinimumFrameDurationOnPhone` (ProMotion 120 Hz), catégorie *racing-games*, Game Mode,
+  `ITSAppUsesNonExemptEncryption = NO`, localisations `en` et `fr`.
+- `NSMotionUsageDescription` traduite (`fr.lproj` / `en.lproj/InfoPlist.strings`) : seul usage des capteurs =
+  direction par inclinaison. Pas de `NSLocalNetworkUsageDescription` (mode en ligne masqué).
+- **`LumenKartViewController.swift`** (utilisé par `SceneDelegate` et `Main.storyboard`) :
+  - plugin local **`TiltMotion`** (CoreMotion, gravité à 60 Hz, événements `gravity {x,y,z}`, arrêt en arrière-plan),
+    consommé par `src/native-motion.js` ;
+  - gestes système différés en bas d'écran, écran maintenu allumé, pas de sélection/loupe/zoom/rebond.
+- `PrivacyInfo.xcprivacy` : pas de traçage, aucune donnée collectée, raison `CA92.1` pour `UserDefaults`
+  (utilisé par `@capacitor/preferences`).
+- Signature : choisir l'équipe dans *Signing & Capabilities* ; archive via *Product › Archive*, ou
+  `ios/ExportOptions.plist` (remplacer `__APPLE_TEAM_ID__`) avec `xcodebuild archive` / `-exportArchive`.
 
-The motion usage description explains tilt steering. Native shells use the local `TiltMotion` Capacitor plugin: CoreMotion device gravity on iOS and a gravity sensor (with a filtered accelerometer fallback) on Android. The plugin suspends sensor updates in the background and resumes while enabled. Browser motion permission is requested from a player gesture; unavailable sensors or denied permission leave touch steering available. The local-network usage description supports races with a LAN server. Device permission prompts and sensor behavior require a real phone; a simulator does not validate tilt steering.
+## Android (`android/`)
 
-Unsigned simulator compilation:
+- Activité **`sensorLandscape`**, `appCategory="game"`, trafic en clair interdit, accéléromètre/gyroscope/manette
+  **non requis** (appareils tactiles seuls acceptés).
+- **Permissions** : `INTERNET` (la WebView sert le jeu via `https://localhost` ; utile aussi au mode en ligne optionnel)
+  et `VIBRATE` (fusionnée par `@capacitor/haptics`). Aucune boîte de dialogue.
+- `MainActivity.java` : enregistre **`TiltMotionPlugin`** (capteur de gravité, repli accéléromètre filtré, même
+  convention que CoreMotion), plein écran immersif, dessin sous l'encoche, écran allumé, mode performance soutenue,
+  exclusion des gestes système sur les 200 dp du bas.
+- Splash Android 12+ (`windowSplashScreen*`) et images `drawable*/splash.png` pour les versions antérieures.
+- `app/build.gradle` : `versionName` lu dans `package.json`, `versionCode` via `-PlumenKart.versionCode=N`, signature lue
+  dans l'environnement (`ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+  `ANDROID_KEY_PASSWORD`) ou dans `android/keystore.properties` (ignoré par git). Signatures v1+v2+v3,
+  `minifyEnabled false` (Capacitor charge ses plugins par réflexion). Pas de Google Services/Firebase.
 
-```sh
-xcodebuild -project ios/App/App.xcodeproj -scheme App \
-  -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath /tmp/turbo-kart-ios-build CODE_SIGNING_ALLOWED=NO build
-```
+## Plugins Capacitor
 
-## Android
+| Plugin | Version | Usage dans le jeu |
+|---|---|---|
+| `@capacitor/app` | 8.1.2 | bouton retour Android, pause/reprise automatiques, quitter depuis le titre |
+| `@capacitor/haptics` | 8.0.2 | vibrations (événement `haptic`), désactivables |
+| `@capacitor/preferences` | 8.0.1 | copie native de la sauvegarde (iOS peut vider le stockage de la WebView) |
+| `@capacitor/splash-screen` | 8.0.2 | écran de lancement 1,5 s, fondu 300 ms |
+| `@capacitor/status-bar` | 8.0.4 | barre d'état en surimpression (déjà masquée par `SystemBars`) |
+| `TiltMotion` (local) | — | direction par inclinaison |
 
-Install Android Studio 2025.2.1 or later with its JDK and Android SDK 36. Open `android/`, let Gradle sync, and select a physical device or emulator. The minimum Android API is 24. The activity uses sensor landscape orientation; accelerometer and gyroscope hardware are optional so touch-only devices remain supported.
+Tout accès passe par `src/native.js` / `src/native-motion.js`, de façon **défensive** (`window.Capacitor.Plugins`, repli
+`registerPlugin`) : sur le web ou si un plugin manque, le jeu continue (repli `navigator.vibrate`, `localStorage`).
+Zones sûres : `env(safe-area-inset-*)` et variables `--safe-area-inset-*` injectées par Capacitor sur Android
+(`SystemBars.insetsHandling: css`).
 
-```sh
-cd android
-./gradlew assembleDebug
-```
+## Icônes et splash
 
-A debug APK is produced in `android/app/build/outputs/apk/debug/`. Release signing must be configured locally; no keystore or credentials are included. Large-screen Android versions may choose to override app orientation restrictions, so the web UI also needs responsive layouts.
+Source unique : `store/brand/icon.svg` (Lumen devant une roue de kart). `npm run assets` (sharp) génère l'AppIcon iOS
+1024, le splash iOS 2732², les mipmaps Android (legacy + adaptatives), les splashs Android, les icônes PWA/favicon et les
+visuels boutique (`app-store-icon-1024.png`, `play-icon-512.png`, `play-feature-graphic.png`).
 
-## Multiplayer hosting
+## Intégration continue
 
-Run the race service on a reachable server and configure its WebSocket URL in the game. `localhost` on a phone means that phone, not the development computer. Use a TLS `wss://` endpoint for native releases; the Android shell keeps cleartext traffic disabled. Browser HTTPS deployments also require `wss://`. A reverse proxy can terminate TLS and forward WebSocket upgrades to the Node service. Solo play needs no server.
+| Workflow | Résultat |
+|---|---|
+| `android.yml` | tests, build, `cap sync android`, **APK debug** (`lumen-kart-debug-apk-N`) ; si les secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (+ `ANDROID_KEY_PASSWORD`) existent : **AAB signé** vérifié par `jarsigner` (`lumen-kart-release-aab-N`) |
+| `ios.yml` | tests, build, `cap sync ios`, **build simulateur non signé** (TestFlight automatisé non inclus : clé API App Store Connect nécessaire) |
 
-## Verification and release work
+## Vérifié / à vérifier
 
-Verified on 2026-09-24: Vite production build, Capacitor sync for both platforms, and unsigned iOS Simulator compilation with Xcode 27 all pass. No simulator runtimes/devices were installed, so launch testing was unavailable. Android debug compilation also passed in GitHub Actions with Java 21 and SDK 36; the local machine has no Android SDK/JDK. The downloadable `turbo-kart-android-debug` artifact is attached to the [verified build](https://github.com/omarRamo/turbo-kart/actions/runs/36041420391). Physical-device motion, touch layout, and multiplayer testing remain necessary before distribution.
+| Vérification | État |
+|---|---|
+| `npm run build`, `npx cap sync` (5 plugins détectés sur les deux plateformes) | OK |
+| Build simulateur iOS non signé (Xcode 27) : paysage seul, 1.0.0 (1), `fr.lproj`/`en.lproj`, PrivacyInfo, AppIcon | OK |
+| Lancement en simulateur iOS | non fait (aucun runtime simulateur installé) |
+| `./gradlew assembleDebug` | non fait localement (pas de JDK/SDK) ; validé par `android.yml` |
+| AAB release signé | chemin CI prêt, non testé sans keystore |
+| **Appareils réels** (inclinaison, haptique, encoche, 60 i/s, sauvegarde après fermeture forcée) | **à faire avant soumission** |
 
-The generated native icons and launch art are framework placeholders. Replace them with final game artwork, choose final app identifiers, configure signing, and complete store metadata before publishing. Production dependencies pass `npm audit --omit=dev`; the current Capacitor CLI's `xcode` → `uuid` development dependency has a moderate advisory reported by `npm audit` (GHSA-w5hq-g745-h8pq).
-
-Reference: [Capacitor environment setup](https://capacitorjs.com/docs/getting-started/environment-setup), [native workflow](https://capacitorjs.com/docs/basics/workflow), [motion permission](https://capacitorjs.com/docs/apis/motion), [Vite production builds](https://vite.dev/guide/build).
-
-The `Verify and build Android` workflow runs the Node tests, builds the web bundle, syncs Capacitor and compiles a debug APK. Debug signing is for testing; store distribution still needs a release keystore.
+Références : [Capacitor — environnement](https://capacitorjs.com/docs/getting-started/environment-setup),
+[workflow natif](https://capacitorjs.com/docs/basics/workflow), [Vite — build](https://vite.dev/guide/build).
