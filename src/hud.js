@@ -146,14 +146,14 @@ export class HUD {
         if (d.lapTime != null) { this.lapPop.textContent = formatTime(d.lapTime); restartAnim(this.lapPop, 'show'); }
       }
     });
-    on('race:wrongWay', (d) => this.wrongEl.classList.toggle('show', !!d.active));
+    on('race:wrongWay', (d) => { this.wrongEl.classList.toggle('show', !!d.active); this.root.classList.toggle('wrong-way', !!d.active); });
     on('item:lightning', (d) => { if (!(d.by && d.by.isPlayer)) restartAnim(this.flashEl, 'flash'); else restartAnim(this.flashEl, 'flash-soft'); });
     on('race:finish', (d) => {
       if (!P(d.kart)) return;
       const p = d.place || 1;
       this.finishEl.innerHTML = `<div class="fin-title">${esc(t('hud.finish'))}</div><div class="fin-place" style="--pc:${PLACE_COLORS[p - 1] || '#fff'}">${placeHTML(p)}</div>`;
       restartAnim(this.finishEl, 'show');
-      this.wrongEl.classList.remove('show');
+      this.wrongEl.classList.remove('show'); this.root.classList.remove('wrong-way');
       this.hideTip();
     });
     on('item:got', (d) => {
@@ -204,7 +204,7 @@ export class HUD {
     this.splitsEl.innerHTML = '';
     this.countEl.className = 'hud-countdown';
     this.bannerEl.className = 'hud-banner';
-    this.wrongEl.classList.remove('show');
+    this.wrongEl.classList.remove('show'); this.root.classList.remove('wrong-way');
     this.finishEl.className = 'hud-finish';
     this.lapPop.className = 'hud-lappop';
     this.itemName.className = 'item-name';
@@ -506,7 +506,7 @@ export class HUD {
     let title, sub, extra = '';
     if (mode === 'tt') {
       title = newTime ? t('res.newRecord') : t('res.tt');
-      sub = t('res.lapRace', { n: laps || '', track: this._trackLabel() });
+      sub = t(laps === 1 ? 'res.lapRace1' : 'res.lapRace', { n: laps || '', track: this._trackLabel() });
       const lapsHtml = (me?.kart?.lapTimes || []).map((x, i) => `<div class="tt-lap" style="--d:${0.15 + i * 0.08}s"><span>${esc(t('res.lapN', { n: i + 1 }))}</span>${formatTime(x)}</div>`).join('');
       extra = `<div class="tt-box"><div class="tt-laps">${lapsHtml}</div><div class="tt-rec">
         <div><span>${esc(t('res.total'))}</span><b>${formatTime(me?.time)}</b>${newTime ? ` <em>${esc(t('common.new'))}</em>` : ''}</div>
@@ -514,7 +514,7 @@ export class HUD {
         <div class="old">${esc(t('res.prevRecord'))} ${record && record.time ? formatTime(record.time) : '—'}</div></div></div>`;
     } else {
       title = me ? (me.place === 1 ? t('res.victory') : me.place <= 3 ? t('res.podium') : t('res.complete')) : t('res.results');
-      sub = t('res.lapRace', { n: laps || '', track: this._trackLabel() });
+      sub = t(laps === 1 ? 'res.lapRace1' : 'res.lapRace', { n: laps || '', track: this._trackLabel() });
     }
     const notesChip = notes > 0 ? `<div class="res-notes"><img src="${noteIconURL()}" alt="">${esc(t('res.notes', { n: notes }))}</div>` : '';
     this._panel(`<div class="res-title">${esc(title)}</div><div class="res-sub">${esc(sub)}</div>${notesChip}

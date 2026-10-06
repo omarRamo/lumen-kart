@@ -506,6 +506,7 @@ body[data-menu="settings"] .hud, body[data-menu="credits"] .hud { visibility: hi
 .hud-tip { position: absolute; left: 50%; top: calc(var(--safe-t) + 130px); transform: translate(-50%, -8px); display: flex; align-items: center; gap: 10px; max-width: min(560px, 62vw);
   padding: 10px 18px 10px 12px; border-radius: 22px; background: var(--ink); color: var(--cream); font: 500 15px/1.35 var(--body); box-shadow: var(--shadow); opacity: 0; transition: opacity .3s, transform .3s var(--ease-pop); }
 .hud-tip.show { opacity: 1; transform: translate(-50%, 0); }
+.hud.wrong-way .hud-tip.show { opacity: 0; } /* the tip box covered the "Wrong way!" banner on phones */
 .hud-tip .ico, .hud-tip img { width: 28px; height: 28px; flex: none; color: var(--gold); }
 .hud-slip { position: absolute; left: 50%; top: calc(var(--safe-t) + 128px); transform: translateX(-50%); opacity: 0; transition: opacity .2s; }
 .hud-slip.show { opacity: 1; }
