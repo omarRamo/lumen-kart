@@ -575,19 +575,21 @@ Aide au débogage dans la console du navigateur : `__game.startRace({ gameMode: 
 ### Limites connues
 | Domaine | Limite |
 |---|---|
-| Vérification | pas encore testé sur **appareils réels** (inclinaison, haptique, encoche, 60 i/s) ; pas de lancement en simulateur iOS ; APK Android compilé seulement en CI |
+| Vérification | playtest QA complet en navigateur (voir [`agents/qa.md`](agents/qa.md)) ; **pas encore testé sur appareils réels** : 60 i/s et chauffe en qualité moyenne (Canopée, Lagons), inclinaison, haptique, encoche / îlot dynamique, bouton retour Android natif, audio dans WKWebView, repli `color-mix()` sur iOS 15–16.1 ; pas de lancement en simulateur iOS ; APK Android compilé seulement en CI |
 | Publication | `CONTACT_EMAIL` à remplacer, URL de politique à confirmer, captures boutique à régénérer sur la build finale, statut de licence de l'art de marque (`store/brand/`) à décider |
 | Art | bras cuits dans le torse (volant limité à ±0,45 rad) ; en qualité basse, lanterne fixe, yeux qui ne clignent pas, oreilles immobiles ; prisme transparent au tri approximatif de près ; nom sur l'aileron seulement en haute qualité |
 | Mondes | bords des raccourcis invisibles (marqués par des haies) ; bord du vide en escalier (masqué par des falaises) ; façades instanciées identiques |
 | Gameplay | l'aide ne gère pas les boosts (sorties brèves possibles en 200cc) ; hit-stop par kart seulement (pas de gel global) |
-| Qualité | changer de qualité recompile les matériaux ; tailles des pools de particules et LOD des karts changent à la course suivante |
+| Qualité | changer de qualité recompile les matériaux ; tailles des pools de particules et LOD des karts changent à la course suivante ; anticrénelage coupé sur mobile (arêtes visibles à pixel ratio 1,25) |
+| Performances | le décor instancié couvre tout le circuit : chaque forêt est dessinée entière à chaque image (passe d'ombre + scène), jusqu'à ~1,1 M triangles par image en qualité moyenne sur la Canopée |
 | Contenu | pas de fantôme en contre-la-montre ; pas de peintures de kart (seules les écharpes se débloquent) |
 | En ligne | masqué ; simulation par l'hôte, sans reconnexion ni anti-triche |
 
 ### Feuille de route suggérée (par priorité)
 | Priorité | Élément |
 |---|---|
-| **P0 — avant soumission** | tests sur appareils réels (perfs, inclinaison, haptique, zones sûres), remesure des draw calls de l'image complète et réglage des seuils de qualité auto ; adresse de contact, URL de politique, décision de licence de l'art ; captures finales ; TestFlight + test fermé Play (12 testeurs / 14 jours) |
+| **P0 — avant soumission** | tests sur appareils réels (iPhone 11 / SE 2, Pixel 6, Android 4 cœurs : 60 i/s et chauffe sur 10 min de GP, inclinaison, haptique, zones sûres, bouton retour, audio, iOS 15) et réglage des seuils de qualité auto ; adresse de contact, URL de politique, décision de licence de l'art ; captures finales ; TestFlight + test fermé Play (12 testeurs / 14 jours) |
+| **P1 — perfs** | **découper le décor instancié en tuiles spatiales (~250 m)** pour que le frustum culling agisse dans les passes ombre et scène (Canopée : −30 à −40 % de triangles estimés) ; FXAA optionnel en qualité haute sur mobile |
 | **P1 — v1.1** | fantôme du meilleur tour en contre-la-montre ; peintures de kart débloquables (prévues par la bible) ; aide à la direction qui tient compte des boosts ; indicateur « aide active » (`kart.assistNudge`) ; gel global au choc (`kart:hitStop`) |
 | **P2 — contenu** | troisième coupe (4 nouveaux mondes de LUMEN), défis/missions par circuit, nouveaux pilotes ; écran de statistiques |
 | **P3 — plateforme** | sauvegarde iCloud / Google (sans compte tiers), Game Center / Play Games (à peser vis-à-vis de la promesse « aucune donnée ») ; TestFlight automatisé (clé API App Store Connect) |

@@ -3,8 +3,8 @@
 Agent : responsable QA / game designer senior · Date : 2026-10-06 · Build testée : `npm run build` (dist/, sans `VITE_WS_URL`)
 servie par `vite preview` (port 5190), pilotée par Playwright (Chrome 1xx, ANGLE Metal, Apple M5 Pro).
 
-Résultat : **14 commits de correctifs** (15 bugs ou réglages, B1–B15), **6 tests de régression ajoutés** (75 → 81 tests unitaires).
-`npm test` 81/81, `npm run build` sans avertissement, `npm run test:browser` 6/6.
+Résultat : **14 commits de correctifs** (15 bugs ou réglages, B1–B15) puis **4 commits de polissage** (§7) ; tests unitaires 75 → 82, test navigateur du GP étendu.
+`npm test` 82/82, `npm run build` sans avertissement, `npm run test:browser` 6/6, `npm run store:check` OK.
 
 ---
 
@@ -134,21 +134,29 @@ Lava 632 k, Aurores 575 k triangles.
   dans les passes ombre et scène. Découper les `InstancedMesh` par tuiles (~250 m) laisserait le frustum culling agir
   (Canopée −30 à −40 % de triangles estimés) au prix de quelques appels.
 - Anticrénelage coupé sur mobile (pixel ratio 1,25) : arêtes visibles sur les toits et rails ; envisager FXAA en « haute ».
-- **Aide à la direction** : en tactile 100cc, un débutant sans aide percute les murs ; proposer l'aide « Auto » aussi pour
-  100cc au premier lancement, ou un bouton « remettre sur la piste ». (B14 garantit déjà la fin de course.)
-- File des cartes de déblocage lente (3–4 cartes enchaînées après le podium) : elles débordent sur l'écran titre et les
-  menus suivants ; accélérer ou regrouper.
-- Contre-la-montre : seul en piste, on ramasse toutes les notes (+46 par essai contre ~10 en GP) → les écharpes se
-  débloquent vite en farmant le CLM ; plafonner les notes CLM si on veut garder la progression.
-- `window.__game` reste exposé en production (utile aux tests et à `store:screenshots`) : le restreindre à `?debug` pour la
-  version finale si l'on veut éviter la triche locale.
 - Le badge de position annonce « 8e » pendant la première seconde (les karts devant passent la ligne avant le joueur) :
   cosmétique.
-- Régénérer `store/screenshots` sur cette build (les captures existantes datent d'avant B1/B2/B9/B13/B15).
+- Régénérer `store/screenshots` sur cette build (`npm run store:screenshots`, qui construit désormais lui-même
+  `.store-dist/`) ; certaines scènes montrent un rival devant la caméra : ajuster `seconds` par scène si besoin.
+- Un bouton « remettre sur la piste » resterait utile aux plus jeunes en 150cc+ (sans aide) ; B14 garantit déjà la fin de
+  course et l'aide « Auto » couvre maintenant 100cc en tactile (P1–P3).
 
 ---
 
-## 7. Outils de playtest utilisés (scratchpad, non versionnés)
+## 7. Passe de polissage (avant publication)
+
+| # | Sujet | Changement | Commit |
+|---|---|---|---|
+| P1 | Aide à la direction | « Auto » = activée en 50cc pour tous **et en 100cc pour les joueurs tactiles** (pas de manette connectée) ; clavier/manette la gardent coupée dès 100cc. Réglage affiché « Auto » avec une explication FR/EN ; étiquette « Aide à la direction » sur la carte 100cc en tactile. Tests `save.test.js`. | `730a114` |
+| P2 | Notes en contre-la-montre | **Plafond de 10 notes par essai** (une jauge pleine, comme une course) au lieu de ~46 ; un essai CLM ne compte plus comme victoire ni podium (il en comptait un à chaque fois). Option retenue plutôt que « 0 note » : l'entraînement reste un peu récompensé sans permettre le farm. Test `save.test.js`. | `72c92f8` |
+| P3 | Cartes de déblocage | Tout ce qui est gagné en même temps tient dans **une seule carte** (ex. « Trophée gagné · Coupe du Crépuscule 100cc / Mode Miroir débloqué / Nox rejoint la course »), 2,4 s + 0,6 s par ligne, **fermée d'un toucher**, et **effacée dès qu'on change d'écran** (menu, nouvelle course, retour au titre). Vérifié dans `racing.spec.js` (GP). | `0f00d93` |
+| P4 | `window.__game` | Compilé hors du bundle boutique (absent de `dist/`) ; exposé seulement en `vite dev` (y compris `?debug`) ou avec `VITE_E2E=1` (Playwright `.e2e-dist/`, `store:screenshots` qui construit `.store-dist/` et masque les bulles du tutoriel). | `f8b86c7` |
+
+
+Validation : `npm test` 82/82, `npm run build` (aucune occurrence de `__game` dans `dist/`), `npm run test:browser` 6/6,
+`npm run store:check` OK, `store:screenshots` testé sur `play-phone` FR et EN (7 captures chacune).
+
+## 8. Outils de playtest utilisés (scratchpad, non versionnés)
 
 Scripts Playwright : parcours complet (`journey`), GP par classe avec bots « inactif / objets / IA » (`gp`), réglages et pause
 (`settings`, `pause`), CLM (`tt`), déblocages (`unlock`), mesures (`perf`, `tris`, `hitch`, `leak`), terrain sous la route
