@@ -792,7 +792,7 @@ export function createEnvironment(scene, renderer, root, L) {
       im.setMatrixAt(k, tmpM.compose(tmpP.set(it.x, it.y, it.z), tmpQ, tmpS));
       if (colors) im.setColorAt(k, colors(it, k));
     });
-    im.castShadow = cast && Q !== 'low'; im.receiveShadow = true;
+    im.castShadow = cast === 'high' ? Q === 'high' : cast && Q !== 'low'; im.receiveShadow = true;
     im.name = name;
     root.add(im);
     return im;
@@ -1189,7 +1189,7 @@ export function createEnvironment(scene, renderer, root, L) {
       });
       const ferns = scatter(1100, 2, (x, y, z, s) => aboveWater(y, 0.8) && (s.d < 90 || forestAt(x, z) > 0.45) && { x, y: y + 0.05, z, r: rnd() * 6.28, s: 0.8 + rnd() * 1.1 });
       alongTrack(9, (r) => 1.5 + r() * 5, (p) => ferns.push({ x: p.x, y: p.y + 0.05, z: p.z, r: rnd() * 6.28, s: 1.0 + rnd() * 0.9 }), { rnd, minClear: 1 });
-      instanced(fernGeo, leafDS, ferns, { colors: (it, k) => pick([0x4f9a3e, 0x62ac4a, 0x3f8a3a, 0x7abc58], k), name: 'ferns' });
+      instanced(fernGeo, leafDS, ferns, { cast: 'high', colors: (it, k) => pick([0x4f9a3e, 0x62ac4a, 0x3f8a3a, 0x7abc58], k), name: 'ferns' });
       const palms = scatter(160, 10, (x, y, z) => aboveWater(y) && { x, y: y - 0.3, z, r: rnd() * 6.28, s: 1.1 + rnd() * 0.5, tilt: (rnd() - 0.5) * 0.25 });
       const [pt, pf] = palmGeos();
       instanced(pt, keep(new THREE.MeshLambertMaterial({ color: 0x8a6a48, flatShading: true })), palms, { name: 'palmTrunks' });

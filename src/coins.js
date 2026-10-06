@@ -12,11 +12,14 @@ const SPILL_MAX = 30;
 const SPARK_MAX = 160;
 
 /** Eighth-note (♪) geometry: oval head + stem + flag, extruded and bevelled, centred on its middle. */
-export function createNoteGeometry() {
+export function createNoteGeometry(quality = 'high') {
+  // QA perf: ~70 notes (+ spill pool) are drawn every frame; the full bevel was ~730 triangles per note.
+  const hq = quality === 'high';
+  const HEAD = hq ? 28 : 16;
   const head = new THREE.Shape();
   const hx = 0, hy = 0, rx = 0.36, ry = 0.27, rot = -0.38;
-  for (let k = 0; k <= 28; k++) {
-    const a = (k / 28) * Math.PI * 2;
+  for (let k = 0; k <= HEAD; k++) {
+    const a = (k / HEAD) * Math.PI * 2;
     const x = Math.cos(a) * rx, y = Math.sin(a) * ry;
     const px = hx + x * Math.cos(rot) - y * Math.sin(rot), py = hy + x * Math.sin(rot) + y * Math.cos(rot);
     if (k === 0) head.moveTo(px, py); else head.lineTo(px, py);
@@ -30,7 +33,7 @@ export function createNoteGeometry() {
   flag.bezierCurveTo(0.68, 0.92, 0.42, 1.0, 0.3, 1.06);
   flag.lineTo(0.3, 1.32);
   flag.closePath();
-  const g = new THREE.ExtrudeGeometry([head, stem, flag], { depth: 0.12, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.04, bevelSegments: 2, curveSegments: 10 });
+  const g = new THREE.ExtrudeGeometry([head, stem, flag], { depth: 0.12, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.04, bevelSegments: hq ? 2 : 1, curveSegments: hq ? 10 : 5 });
   g.computeBoundingBox();
   const bb = g.boundingBox;
   g.translate(-(bb.min.x + bb.max.x) / 2, -(bb.min.y + bb.max.y) / 2, -(bb.min.z + bb.max.z) / 2);
@@ -53,12 +56,13 @@ export class CoinSystem {
     this._e = new THREE.Euler();
 
     const positions = track?.coinPositions || [];
-    this.geo = createNoteGeometry();
+    const quality = (typeof window !== 'undefined' && window.__lumenQuality) || 'high';
+    this.geo = createNoteGeometry(quality);
     this.mat = new THREE.MeshStandardMaterial({ color: 0xffcf5a, emissive: 0xb87a10, emissiveIntensity: 0.65, metalness: 0.55, roughness: 0.28 });
     const cap = positions.length + SPILL_MAX;
     this.mesh = new THREE.InstancedMesh(this.geo, this.mat, Math.max(1, cap));
     this.mesh.name = 'notes';
-    this.mesh.castShadow = true;
+    this.mesh.castShadow = quality === 'high';   // tiny floating notes: their shadow is not worth a full extra pass
     this.mesh.frustumCulled = false;   // instances move every frame; bounds would be stale
     this.mesh.count = cap;
     this.group.add(this.mesh);

@@ -682,7 +682,7 @@ export function createTrack(scene, renderer, opts = {}) {
       }
     }
     im.count = n;
-    im.castShadow = quality !== 'low'; im.receiveShadow = true;
+    im.castShadow = quality === 'high'; im.receiveShadow = true;   // QA perf: ~54k triangles in the shadow pass
     im.name = 'bumpers';
     root.add(im);
     disposables.push(tireGeo);
