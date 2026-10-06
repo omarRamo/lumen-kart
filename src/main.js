@@ -246,6 +246,7 @@ const menu = new Menu(uiRoot, {
   },
   onQuit: () => goToTitle(),
   onScreen: (s) => {
+    hud.clearCelebrations(); // unlock cards belong to the screen they were earned on
     if (RACE_STATES.has(state) || state === 'paused' || state === 'loading' || state === 'online') return;
     if (s === 'select') setState('select');
     else if (['title', 'mode', 'class', 'course', 'settings', 'credits'].includes(s)) setState('title');
@@ -535,6 +536,7 @@ function buildAttract() {
 
 function goToTitle() {
   const flow = ++flowVersion;
+  hud.clearCelebrations();
   leaveOnline();
   disposeWorld();
   hideIntroCard();
@@ -573,6 +575,7 @@ function startMode(s0) {
 
 function startRace(s) {
   const flow = ++flowVersion;
+  hud.clearCelebrations();
   lastSettings = { ...lastSettings, ...s };
   if (lastSettings.gameMode === 'gp' && gp) {
     lastSettings.trackId = gp.cup.tracks[gp.index];

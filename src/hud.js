@@ -249,13 +249,27 @@ export class HUD {
     if (f.time >= 0.5) { this.fpsEl.textContent = t('hud.fps', { n: Math.round(f.frames / f.time) }); f.frames = 0; f.time = 0; }
   }
 
-  /** Celebration cards for unlocks / medals, queued one after another. */
+  /**
+   * Celebration cards for unlocks / medals. Everything unlocked at once (a podium can give a trophy + a cup +
+   * Mirror + Nox) is collapsed into ONE card; cards are short (2.4 s, +0.6 s per extra line), dismissed by a tap,
+   * and clearCelebrations() drops them when the player leaves the screen, so they never spill into menus or a race.
+   */
   celebrate(events = []) {
+    const items = [];
     for (const ev of events) {
       const text = this._unlockText(ev);
-      if (text) this._unlockQueue.push({ ev, text });
+      if (text) items.push({ ev, text });
     }
+    if (!items.length) return;
+    this._unlockQueue.push(items);
     if (!this._unlockBusy) this._nextUnlock();
+  }
+  clearCelebrations() {
+    this._unlockQueue.length = 0;
+    clearTimeout(this._unlockTimer); clearTimeout(this._unlockOutTimer);
+    this._unlockBusy = false;
+    this._unlockCard = null;
+    this.unlockEl.replaceChildren();
   }
   _unlockText(ev) {
     switch (ev.type) {
@@ -268,19 +282,30 @@ export class HUD {
     }
   }
   _nextUnlock() {
-    const item = this._unlockQueue.shift();
-    if (!item) { this._unlockBusy = false; return; }
+    const items = this._unlockQueue.shift();
+    if (!items) { this._unlockBusy = false; return; }
     this._unlockBusy = true;
-    const { ev, text } = item;
+    const { ev } = items[0];
     const sw = ev.type === 'scarf' ? SCARVES.find((s) => s.id === ev.id) : null;
     const icon = ev.type === 'medal' ? `<span class="uc-icon medal m${ev.place}">${svgIcon('trophy')}</span>`
       : sw ? `<span class="uc-icon swatch-ico" style="--sw:${hex(sw.color)}"></span>`
         : `<span class="uc-icon">${svgIcon(ev.type === 'character' ? 'star' : 'sparkle')}</span>`;
-    const card = el('div', 'unlock-card', this.unlockEl, `${icon}<span class="uc-text"><small>${esc(ev.type === 'medal' ? t('common.new') : t('unlock.title'))}</small><b>${esc(text)}</b></span>`);
-    bus.emit('game:unlock', ev);
+    const title = items.length === 1 && ev.type === 'medal' ? t('common.new') : t('unlock.title');
+    const lines = items.slice(0, 4).map((it) => `<b>${esc(it.text)}</b>`).join('');
+    const card = el('div', 'unlock-card' + (items.length > 1 ? ' multi' : ''), this.unlockEl, `${icon}<span class="uc-text"><small>${esc(title)}</small>${lines}</span>`);
+    card.setAttribute('role', 'status');
+    this._unlockCard = card;
+    for (const it of items) bus.emit('game:unlock', it.ev);
+    const dismiss = () => {
+      if (this._unlockCard !== card) return;
+      this._unlockCard = null;
+      clearTimeout(this._unlockTimer);
+      card.classList.remove('show'); card.classList.add('out');
+      this._unlockOutTimer = setTimeout(() => { card.remove(); this._nextUnlock(); }, 320);
+    };
+    card.addEventListener('pointerdown', (e) => { e.stopPropagation(); dismiss(); });
     requestAnimationFrame(() => card.classList.add('show'));
-    setTimeout(() => { card.classList.remove('show'); card.classList.add('out'); }, 2900);
-    setTimeout(() => { card.remove(); this._nextUnlock(); }, 3300);
+    this._unlockTimer = setTimeout(dismiss, 2400 + 600 * (Math.min(4, items.length) - 1));
   }
 
   // ------------------------------------------------------------------ minimap

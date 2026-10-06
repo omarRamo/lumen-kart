@@ -525,6 +525,9 @@ body[data-menu="settings"] .hud, body[data-menu="credits"] .hud { visibility: hi
   opacity: 0; transform: translateY(-30px) scale(.9); transition: opacity .35s, transform .45s var(--ease-pop); }
 .unlock-card.show { opacity: 1; transform: none; }
 .unlock-card.out { opacity: 0; transform: translateY(-16px) scale(.96); }
+.unlock-card { pointer-events: auto; cursor: pointer; } /* tap to dismiss */
+.unlock-card.multi { border-radius: 28px; padding-top: 12px; padding-bottom: 12px; }
+.unlock-card.multi .uc-text b { display: block; }
 .uc-icon { width: 48px; height: 48px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--gold); color: var(--paper); box-shadow: inset 0 -4px 0 rgba(0, 0, 0, .1); }
 .uc-icon .ico { width: 26px; height: 26px; }
 .uc-icon.medal { padding: 0; height: 48px; }
