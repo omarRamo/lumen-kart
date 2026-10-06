@@ -232,11 +232,15 @@ export class ChaseCamera {
       if (mode === 'intro') {
         const t = smoothstep(clamp(this.modeTime / INTRO_TIME, 0, 1));
         const baseYaw = this.modeYaw;
-        const a = baseYaw + lerp(0.7, PI, t) + Math.sin(t * PI) * 0.6;
+        const rel = lerp(0.7, PI, t) + Math.sin(t * PI) * 0.6;
         const r = lerp(28, this.distance, t);
-        const h = lerp(13, this.height, t);
-        const cx = Math.sin(baseYaw) * lerp(10, 0, t), cz = Math.cos(baseYaw) * lerp(10, 0, t);
-        this._desired.set(cx + Math.sin(a) * r, h, cz + Math.cos(a) * r);
+        // QA: the fly-by used to start 18-24 m to the side at 13 m high, i.e. inside the grandstand roofs next to
+        // the grid (a flat cream slab filled half the screen). Stay above the road corridor and above the roofs.
+        const h = lerp(24, this.height, t);
+        const fwd = lerp(10, 0, t) + Math.cos(rel) * r;
+        const lat = clamp(Math.sin(rel) * r, -9, 9);
+        const sb = Math.sin(baseYaw), cb = Math.cos(baseYaw);
+        this._desired.set(sb * fwd + cb * lat, h, cb * fwd - sb * lat);
         const fx = Math.sin(baseYaw), fz = Math.cos(baseYaw);
         this._desiredLook.set(fx * lerp(8, this.lookAhead, t), lerp(0.5, this.lookHeight, t), fz * lerp(8, this.lookAhead, t));
         this.yaw = baseYaw;
