@@ -82,3 +82,12 @@ test('every world has a soundtrack and every song compiles to valid notes', () =
     for (const ev of audioTest.SONGS[name].melSteps) if (ev) assert.ok([0, 2, 4, 7, 9].includes(((ev.m - def.key) % 12 + 12) % 12), `${name} note ${ev.m}`);
   }
 });
+
+test('French typography: no-break spaces before high punctuation (QA)', async () => {
+  const { frenchSpacing, setLanguage, t } = await import('../src/i18n.js');
+  assert.equal(frenchSpacing('Partez ! Prêt ? Note : « ok »'), 'Partez\u202f! Prêt\u202f? Note\u00a0: «\u00a0ok\u00a0»');
+  setLanguage('fr');
+  for (const key of ['hud.go', 'select.go', 'loading.ready']) assert.ok(!/ [!?:;]/.test(t(key)), `${key}: ${t(key)}`);
+  setLanguage('en');
+  assert.equal(t('hud.go'), 'Go!');
+});

@@ -534,13 +534,20 @@ export function setLanguage(lang) {
 
 export function onLanguageChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
+/** French typography: no-break spaces before high punctuation and inside guillemets, so a lone "!" or ":"
+ *  never wraps onto its own line on a phone (narrow NBSP before ! ? ;, NBSP before : and inside « »). */
+export function frenchSpacing(s) {
+  return String(s).replace(/ ([!?;])/g, '\u202f$1').replace(/ :/g, '\u00a0:').replace(/« /g, '«\u00a0').replace(/ »/g, '\u00a0»');
+}
+const typo = (s, lang) => (lang === 'fr' && s ? frenchSpacing(s) : s);
+
 export function t(key, vars) {
   const table = STRINGS[current] || STRINGS.en;
   let s = table[key];
   if (s == null) s = STRINGS.en[key];
   if (s == null) return key;
   if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (vars[k] != null ? String(vars[k]) : m));
-  return s;
+  return typo(s, current);
 }
 
 // ------------------------------------------------------------------------------------ helpers
@@ -550,7 +557,7 @@ export function trackName(def, lang = current) {
 }
 export function trackBlurb(def, lang = current) {
   if (!def) return '';
-  return def.blurbs?.[lang] || TRACK_BLURBS[def.id]?.[lang] || def.blurb || '';
+  return typo(def.blurbs?.[lang] || TRACK_BLURBS[def.id]?.[lang] || def.blurb || '', lang);
 }
 export function cupName(cup, lang = current) {
   if (!cup) return '';
