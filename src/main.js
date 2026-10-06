@@ -720,10 +720,17 @@ function celebrateLater(events) { if (events?.length) pendingCelebrations.push(.
 function flushCelebrations() { if (pendingCelebrations.length) { const ev = pendingCelebrations; pendingCelebrations = []; setTimeout(() => hud.celebrate(ev), 500); } }
 const cupIdList = () => CUPS.map((c) => c.id);
 
+bus.on('race:closing', (d) => {
+  if (world?.mode === 'race' && !world.network && world.player && !world.player.finished) hud.toast(t('toast.closing', { n: d?.seconds ?? 20 }));
+});
+
 bus.on('race:end', (d) => {
   if (!world || world.mode !== 'race') return;
   if (world.network) { showOnlineResults(d.results); return; }
   resultsShown = true;
+  // Closed by the last-place grace timer: the player never crossed the line, leave the racing state (touch
+  // cockpit, pause) before the results show.
+  if (state === 'racing' || state === 'countdown') { setState('finished'); hud.hideTip(); }
   const results = (d && d.results) || world.race.computeResults();
   if (state === 'paused') resume();
   const w = world;

@@ -423,3 +423,21 @@ test('light prisms are instanced: a whole course of item boxes costs a handful o
     assert.equal(sys.group.children.length, 0);
   });
 });
+
+test('race closes after a grace period once every rival is home (no endless race for a stuck player) (QA)', async () => {
+  const { RaceManager, LAST_PLACE_GRACE } = await import('../src/race.js');
+  const track = { length: 1000, getTangentAt: () => ({ x: 0, y: 0, z: 1 }), getSurfaceInfo: () => ({ t: 0.5 }) };
+  const mk = (isPlayer) => ({ isPlayer, trackT: 0.5, speed: 0, velocity: { x: 0, z: 0 }, character: { id: isPlayer ? 'lumen' : 'zina', name: 'x' } });
+  const player = mk(true), rival = mk(false);
+  const race = new RaceManager({ track, karts: [player, rival], player, laps: 1, silent: true });
+  race.phase = 'racing';
+  race._finish(rival);
+  race.update(1 / 60);
+  assert.equal(race.ended, false);
+  for (let i = 0; i < (LAST_PLACE_GRACE - 1) * 60; i++) race.update(1 / 60);
+  assert.equal(race.ended, false, 'the player still has time to cross the line');
+  for (let i = 0; i < 2 * 60; i++) race.update(1 / 60);
+  assert.equal(race.ended, true, 'race closed after the grace period');
+  const me = race.results.find((r) => r.isPlayer);
+  assert.equal(me.place, 2); assert.equal(me.estimated, true);
+});

@@ -2,6 +2,9 @@
 import { bus } from './events.js';
 import { RACE } from './config.js';
 
+/** Seconds a lagging player still has once all rivals have finished. */
+export const LAST_PLACE_GRACE = 20;
+
 export class RaceManager {
   /**
    * @param {object} o
@@ -118,6 +121,16 @@ export class RaceManager {
     this._sortPlaces();
     if (this.player && !this.player.finished && this.phase === 'racing') this._updateWrongWay(dt);
     else if (this.wrongWay) this._setWrongWay(false);
+
+    // QA: once every rival is home, close the race after a grace period instead of waiting forever for a
+    // player who is stuck or has given up (a young player against a wall with auto-throttle on mobile).
+    // The player is then classified with an estimated time (computeResults).
+    if (!this._closing && this.player && !this.player.finished && this.endTimer < 0 && !this.ended
+      && this.karts.length > 1 && this._finishCount >= this.karts.length - 1) {
+      this._closing = true;
+      this.endTimer = LAST_PLACE_GRACE;
+      this._emit('race:closing', { seconds: LAST_PLACE_GRACE });
+    }
 
     if (this.endTimer >= 0) {
       this.endTimer -= dt;
