@@ -1,0 +1,8 @@
+{
+  "appId": "com.turbokartrally.game",
+  "appName": "Turbo Kart Rally",
+  "webDir": "dist",
+  "backgroundColor": "#101827",
+  "ios": { "contentInset": "never", "preferredContentMode": "mobile" },
+  "android": { "backgroundColor": "#101827" }
+}
