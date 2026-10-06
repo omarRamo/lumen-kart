@@ -119,3 +119,57 @@ test('quality hint thins the world but keeps the gameplay identical', () => {
   assert.deepEqual(a.itemBoxPositions.map((p) => p.toArray()), b.itemBoxPositions.map((p) => p.toArray()));
   a.dispose(); b.dispose();
 });
+
+// QA regression: the terrain mesh used to rise metres above the road near bridge ends and on hillsides (meadow pond
+// bridge, jungle river, aurora…), hiding the road and even swallowing the camera. Sample the rendered terrain
+// triangles under the drivable road at both terrain resolutions.
+for (const quality of ['high', 'low']) {
+  test(`terrain never covers the road (${quality} terrain grid)`, () => {
+    for (const def of TRACKS) {
+      const scene = new THREE.Scene();
+      const track = createTrack(scene, null, { def, quality });
+      let terrain = null;
+      scene.traverse((o) => { if (o.name === 'terrain') terrain = o; });
+      assert.ok(terrain, `${def.id}: terrain mesh`);
+      const pos = terrain.geometry.attributes.position, idx = terrain.geometry.index.array;
+      const cell = 16, grid = new Map();
+      const key = (i, j) => i * 100003 + j;
+      for (let t = 0; t < idx.length; t += 3) {
+        const xs = [pos.getX(idx[t]), pos.getX(idx[t + 1]), pos.getX(idx[t + 2])];
+        const zs = [pos.getZ(idx[t]), pos.getZ(idx[t + 1]), pos.getZ(idx[t + 2])];
+        for (let i = Math.floor(Math.min(...xs) / cell); i <= Math.floor(Math.max(...xs) / cell); i++) {
+          for (let j = Math.floor(Math.min(...zs) / cell); j <= Math.floor(Math.max(...zs) / cell); j++) {
+            const k = key(i, j);
+            if (!grid.has(k)) grid.set(k, []);
+            grid.get(k).push(t);
+          }
+        }
+      }
+      const groundAt = (x, z) => {
+        for (const t of grid.get(key(Math.floor(x / cell), Math.floor(z / cell))) || []) {
+          const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+          const ax = pos.getX(a), az = pos.getZ(a), bx = pos.getX(b), bz = pos.getZ(b), cx = pos.getX(c), cz = pos.getZ(c);
+          const d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+          const l1 = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / d;
+          const l2 = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / d;
+          if (l1 >= -1e-6 && l2 >= -1e-6 && 1 - l1 - l2 >= -1e-6) return l1 * pos.getY(a) + l2 * pos.getY(b) + (1 - l1 - l2) * pos.getY(c);
+        }
+        return null;
+      };
+      let worst = 0, where = null;
+      for (let i = 0; i < 1500; i++) {
+        const t = i / 1500, p = track.getPointAt(t), tan = track.getTangentAt(t);
+        const len = Math.hypot(tan.x, tan.z) || 1;
+        for (const lat of [-11, -6, 0, 6, 11]) {
+          const x = p.x + (tan.z / len) * lat, z = p.z - (tan.x / len) * lat;
+          const info = track.getSurfaceInfo(new THREE.Vector3(x, p.y, z), t);
+          if (info.surface === 'pit') continue;
+          const g = groundAt(x, z);
+          if (g != null && g - info.height > worst) { worst = g - info.height; where = `t=${t.toFixed(3)} lat=${lat}`; }
+        }
+      }
+      assert.ok(worst < 0.05, `${def.id} (${quality}): terrain ${worst.toFixed(2)} m above the road at ${where}`);
+      track.dispose();
+    }
+  });
+}

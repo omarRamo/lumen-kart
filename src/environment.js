@@ -312,7 +312,13 @@ export function createEnvironment(scene, renderer, root, L) {
   function heightAt(x, z) {
     const n = natural(x, z);
     const c = corridorAt(x, z);
-    return c.w > 0 ? lerp(n, c.y - 0.6, c.w) : n;
+    const h = c.w > 0 ? lerp(n, c.y - 0.6, c.w) : n;
+    // QA: never let the ground rise through the road. Near bridge ends the corridor weight fades out (bridge
+    // weight) and on hillsides the 58 m blend leaves a few % of a tall hill: with a coarse terrain grid the
+    // interpolated triangles then poked metres above the road (meadow pond bridge, jungle river, aurora…).
+    // Cap the terrain under the road and let it rise from wall + 4 m with a gentle 0.35 bank.
+    if (c.i < 0) return h;
+    return Math.min(h, c.y - 0.6 + Math.max(0, c.d - c.wall - 4) * 0.35);
   }
   // a void world: the island floats; outside the rim and inside the lake is open sky
   const isVoid = (x, z) => {
